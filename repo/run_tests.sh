@@ -5,14 +5,23 @@ echo "  Running All Tests"
 echo "========================================="
 echo ""
 
+# Check if running inside Docker or need to use docker-compose
+if [ -f "/.dockerenv" ]; then
+    # Running inside Docker container
+    TEST_CMD="python"
+else
+    # Running on host, use docker-compose to run inside container
+    TEST_CMD="docker-compose run --rm api python"
+fi
+
 # Unit tests
 echo "--- Unit Tests ---"
-python -m pytest tests/unit/ -v --tb=short 2>&1
+$TEST_CMD -m pytest tests/unit/ -v --tb=short 2>&1
 UNIT_EXIT=$?
 
 echo ""
 echo "--- API/Integration Tests ---"
-python -m pytest tests/api/ -v --tb=short 2>&1
+$TEST_CMD -m pytest tests/api/ -v --tb=short 2>&1
 API_EXIT=$?
 
 echo ""
@@ -21,7 +30,7 @@ echo "  Test Summary"
 echo "========================================="
 
 # Run with coverage for summary
-python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing 2>&1 | tail -20
+$TEST_CMD -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing 2>&1 | tail -20
 echo ""
 
 if [ $UNIT_EXIT -ne 0 ] || [ $API_EXIT -ne 0 ]; then

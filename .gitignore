@@ -3,7 +3,7 @@
 .vscode/
 *.tmp.md
 temp/
-.tmp/
+# .tmp/
 
 # Environment variables
 .env

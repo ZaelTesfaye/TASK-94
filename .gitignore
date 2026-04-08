@@ -45,10 +45,12 @@ coverage.xml
 logs/
 *.log
 
+.claude/
 .vscode/
 .idea/
 *.swp
 *.swo
+temp/ 
 
 # OS
 .DS_Store

@@ -77,6 +77,116 @@ class TestCrossOrgIsolation:
             assert item["organization_id"] != org_setup["id"]
 
 
+class TestCrossOrgContentCreation:
+    def test_user_cannot_create_content_in_foreign_org(self, client, admin_headers, member_user, org_setup, db):
+        """A member should not be able to create content in an org they don't belong to."""
+        from src.models.models import Organization
+
+        # Create a second org that member_user does NOT belong to
+        org_b = Organization(name="Foreign Org", slug=f"foreign-{uuid.uuid4().hex[:6]}", is_active=True)
+        db.session.add(org_b)
+        db.session.commit()
+
+        resp = client.post("/content", json={
+            "title": "Should Be Blocked",
+            "body": "Attempting cross-org content creation.",
+            "organization_id": org_b.id,
+        }, headers=member_user["headers"])
+        assert resp.status_code == 403
+
+    def test_member_can_create_content_in_own_org(self, client, member_user, org_setup, db):
+        resp = client.post("/content", json={
+            "title": "Own Org Content",
+            "body": "This should succeed.",
+            "organization_id": org_setup["id"],
+        }, headers=member_user["headers"])
+        assert resp.status_code == 201
+
+
+class TestCrossOrgInvitations:
+    def test_org_admin_cannot_create_invitation_for_other_org(self, client, db, org_setup):
+        """An org_admin should not be able to create invitations for a foreign org."""
+        from src.models.models import Organization, User, Membership
+        from src.models.enums import RoleType
+
+        # Create org B
+        org_b = Organization(name="Other Org", slug=f"other-{uuid.uuid4().hex[:6]}", is_active=True)
+        db.session.add(org_b)
+        db.session.commit()
+
+        # Create an org_admin user in org A
+        reg_resp = client.post("/auth/register-guest", json={
+            "username": f"orgadmin_{uuid.uuid4().hex[:8]}",
+            "password": "SecurePass1!",
+        })
+        user_id = reg_resp.get_json()["data"]["user"]["id"]
+        user = User.query.get(user_id)
+        user.role = RoleType.ORG_ADMIN.value
+        m = Membership(user_id=user_id, organization_id=org_setup["id"], role=RoleType.ORG_ADMIN.value, is_active=True)
+        db.session.add(m)
+        db.session.commit()
+
+        # Login to get token
+        login_resp = client.post("/auth/login", json={
+            "username": user.username,
+            "password": "SecurePass1!",
+        })
+        token = login_resp.get_json()["data"]["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Try to create invitation for org B (should fail)
+        resp = client.post("/invitations", json={
+            "organization_id": org_b.id,
+            "target_role": "member",
+        }, headers=headers)
+        assert resp.status_code == 403
+
+
+class TestCrossOrgPermissions:
+    def test_org_admin_cannot_assign_permissions_in_other_org(self, client, db, org_setup):
+        """An org_admin should not assign permissions in an org they don't belong to."""
+        from src.models.models import Organization, User, Membership, Permission
+        from src.models.enums import RoleType
+
+        # Create org B
+        org_b = Organization(name="Perm Other Org", slug=f"perm-other-{uuid.uuid4().hex[:6]}", is_active=True)
+        db.session.add(org_b)
+        db.session.commit()
+
+        # Create org_admin in org A
+        reg_resp = client.post("/auth/register-guest", json={
+            "username": f"permadmin_{uuid.uuid4().hex[:8]}",
+            "password": "SecurePass1!",
+        })
+        user_id = reg_resp.get_json()["data"]["user"]["id"]
+        user = User.query.get(user_id)
+        user.role = RoleType.ORG_ADMIN.value
+        m = Membership(user_id=user_id, organization_id=org_setup["id"], role=RoleType.ORG_ADMIN.value, is_active=True)
+        db.session.add(m)
+
+        # Create a permission
+        perm = Permission.query.filter_by(code="test:perm").first()
+        if not perm:
+            perm = Permission(code="test:perm", description="Test permission")
+            db.session.add(perm)
+        db.session.commit()
+
+        login_resp = client.post("/auth/login", json={
+            "username": user.username,
+            "password": "SecurePass1!",
+        })
+        token = login_resp.get_json()["data"]["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Try to assign permission in org B (should fail)
+        resp = client.post("/permissions/assign", json={
+            "user_id": user_id,
+            "permission_code": "test:perm",
+            "organization_id": org_b.id,
+        }, headers=headers)
+        assert resp.status_code == 403
+
+
 class TestSecurityHeaders:
     def test_security_headers_present(self, client, db):
         resp = client.get("/health")

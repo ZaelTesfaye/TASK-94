@@ -106,6 +106,19 @@ def init_scheduler(app):
         replace_existing=True,
     )
 
+    # --- Job 7: Anomaly alert evaluation (every 5 minutes) ---
+    def evaluate_anomaly_alerts():
+        with app.app_context():
+            _evaluate_anomaly_alerts()
+
+    scheduler.add_job(
+        evaluate_anomaly_alerts,
+        "interval",
+        minutes=5,
+        id="evaluate_anomaly_alerts",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info("scheduler", "init", "Scheduler started with all jobs registered")
 
@@ -261,3 +274,55 @@ def _purge_old_backups():
 
     if purged:
         logger.info("scheduler", "backup_purge", f"Purged {purged} old backup files")
+
+
+def _evaluate_anomaly_alerts():
+    """Periodically check for anomaly patterns and create alerts."""
+    from src.models.base import db
+    from src.models.models import AuditEvent, Alert
+    from src.models.enums import AuditEventType, AlertSeverity, AlertStatus
+    from src.utils.alert_writer import create_alert
+
+    now = datetime.now(timezone.utc)
+
+    # Check failed login spikes (>20 failures in last hour)
+    cutoff_login = now - timedelta(hours=1)
+    failed_logins = AuditEvent.query.filter(
+        AuditEvent.event_type == AuditEventType.USER_LOGIN_FAILED.value,
+        AuditEvent.created_at >= cutoff_login,
+    ).count()
+
+    if failed_logins > 20:
+        existing = Alert.query.filter(
+            Alert.alert_type == "FAILED_LOGIN_SPIKE",
+            Alert.created_at >= cutoff_login,
+        ).first()
+        if not existing:
+            create_alert(
+                alert_type="FAILED_LOGIN_SPIKE",
+                severity=AlertSeverity.HIGH.value,
+                title=f"Login failure spike: {failed_logins} failures in last hour",
+            )
+            logger.warning("scheduler", "anomaly", f"Failed login spike alert: {failed_logins}")
+
+    # Check booking conflict spikes (based on overlap conflict events, not holds)
+    cutoff_booking = now - timedelta(minutes=5)
+    booking_conflicts = AuditEvent.query.filter(
+        AuditEvent.event_type == AuditEventType.BOOKING_CONFLICT.value,
+        AuditEvent.created_at >= cutoff_booking,
+    ).count()
+
+    if booking_conflicts >= 5:
+        existing = Alert.query.filter(
+            Alert.alert_type == "BOOKING_CONFLICT_SPIKE",
+            Alert.created_at >= cutoff_booking,
+        ).first()
+        if not existing:
+            create_alert(
+                alert_type="BOOKING_CONFLICT_SPIKE",
+                severity=AlertSeverity.MEDIUM.value,
+                title=f"Booking conflict spike: {booking_conflicts} conflicts in last 5 minutes",
+            )
+            logger.warning("scheduler", "anomaly", f"Booking conflict spike alert: {booking_conflicts}")
+
+    logger.debug("scheduler", "anomaly", "Anomaly alert evaluation completed")

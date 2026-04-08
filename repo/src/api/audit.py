@@ -1,5 +1,6 @@
 """Audit events and alerts API endpoints - plan section 9."""
 
+import json
 from datetime import datetime, timezone
 
 from flask import Blueprint, request, g
@@ -13,6 +14,25 @@ from src.security.auth_middleware import require_auth, require_role
 from src.utils.responses import success_response, error_response, list_response
 from src.utils.pagination import paginate_query
 from src.logging import logger
+
+# Keys that must be redacted from audit before_state / after_state JSON.
+_SENSITIVE_AUDIT_KEYS = {"decision_notes", "appeal_notes", "appeal_decision_notes"}
+
+
+def _redact_state_json(raw_json: str | None) -> str | None:
+    """Redact sensitive keys from a JSON-encoded state string."""
+    if not raw_json:
+        return raw_json
+    try:
+        data = json.loads(raw_json)
+        if isinstance(data, dict):
+            for key in _SENSITIVE_AUDIT_KEYS:
+                if key in data:
+                    data[key] = "[REDACTED]"
+            return json.dumps(data)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return raw_json
 
 audit_bp = Blueprint("audit", __name__, url_prefix="")
 
@@ -90,8 +110,8 @@ def list_audit_events():
                 "target_type": e.target_type,
                 "target_id": e.target_id,
                 "organization_id": e.organization_id,
-                "before_state": e.before_state,
-                "after_state": e.after_state,
+                "before_state": _redact_state_json(e.before_state),
+                "after_state": _redact_state_json(e.after_state),
                 "metadata_json": e.metadata_json,
                 "created_at": e.created_at.isoformat() if e.created_at else None,
             }

@@ -1,5 +1,6 @@
 """Auth endpoints - plan section 6.1."""
 
+import json
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, request, g
@@ -8,7 +9,7 @@ from src.models.base import db
 from src.models.models import (
     User, RefreshToken, AccessTokenDenylist, Device, AuditEvent, Membership, Organization,
 )
-from src.models.enums import RoleType, AuditEventType, DeviceStatus
+from src.models.enums import RoleType, ROLE_HIERARCHY, AuditEventType, DeviceStatus, UserStatus
 from src.security.passwords import hash_password, verify_password
 from src.security.tokens import create_access_token, create_refresh_token, decode_token, hash_token
 from src.security.lockout import (
@@ -16,12 +17,134 @@ from src.security.lockout import (
     create_captcha_challenge, verify_captcha,
 )
 from src.security.auth_middleware import require_auth
-from src.security.encryption import encrypt_field
+from src.security.encryption import encrypt_field, compute_fingerprint_lookup_hash
 from src.utils.responses import success_response, error_response
 from src.logging import logger
 from src.config import config
 
+
+def _resolve_effective_role(user_role: str, membership_role: str | None) -> str:
+    """Return the higher of the user's global role and their membership role.
+
+    Platform admins always retain platform_admin regardless of membership.
+    For all other cases the membership role wins when it is higher than the
+    global role in the hierarchy, and the global role acts as a floor.
+    """
+    if membership_role is None:
+        return user_role
+    try:
+        user_level = ROLE_HIERARCHY[RoleType(user_role)]
+        membership_level = ROLE_HIERARCHY[RoleType(membership_role)]
+    except (ValueError, KeyError):
+        return user_role
+    return user_role if user_level >= membership_level else membership_role
+
+
+def _get_user_permissions(user_id: str, org_id: str) -> list:
+    """Load effective permission codes for a user in an org context."""
+    from src.models.models import Permission, UserPermission
+    query = db.session.query(Permission.code).join(
+        UserPermission, UserPermission.permission_id == Permission.id
+    ).filter(
+        UserPermission.user_id == user_id,
+    )
+    if org_id:
+        query = query.filter(
+            db.or_(
+                UserPermission.organization_id == org_id,
+                UserPermission.organization_id.is_(None),
+            ),
+        )
+    else:
+        # No org context: load unscoped permissions only
+        query = query.filter(UserPermission.organization_id.is_(None))
+    return [r.code for r in query.all()]
+
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+
+FAILED_LOGIN_ALERT_THRESHOLD = 20
+FAILED_LOGIN_WINDOW_SECONDS = 3600  # 1 hour
+
+
+def _accumulate_device_risk(fingerprint_lookup_hash: str, ip: str):
+    """Increment device risk score on failed login and auto-blacklist if threshold exceeded.
+
+    When a device's accumulated risk score reaches DEVICE_RISK_BLACKLIST_THRESHOLD,
+    the device is automatically transitioned to BLACKLISTED status with a cooldown
+    period defined by DEVICE_BLACKLIST_RETRY_AFTER_HOURS.
+    """
+    try:
+        device = Device.query.filter_by(
+            fingerprint_lookup_hash=fingerprint_lookup_hash,
+        ).first()
+        if device is None or device.status == DeviceStatus.BLACKLISTED.value:
+            return
+
+        device.risk_score = min(
+            device.risk_score + config.DEVICE_RISK_INCREMENT_PER_FAILURE,
+            1.0,
+        )
+
+        if device.risk_score >= config.DEVICE_RISK_BLACKLIST_THRESHOLD:
+            device.status = DeviceStatus.BLACKLISTED.value
+            device.blacklisted_until = (
+                datetime.now(timezone.utc)
+                + timedelta(hours=config.DEVICE_BLACKLIST_RETRY_AFTER_HOURS)
+            )
+
+            audit = AuditEvent(
+                event_type=AuditEventType.DEVICE_BLACKLISTED.value,
+                actor_id="system",
+                actor_ip=ip,
+                target_type="Device",
+                target_id=device.id,
+                metadata_json=json.dumps({
+                    "reason": "risk_score_threshold_exceeded",
+                    "risk_score": device.risk_score,
+                    "threshold": config.DEVICE_RISK_BLACKLIST_THRESHOLD,
+                    "blacklisted_until": device.blacklisted_until.isoformat(),
+                }),
+            )
+            db.session.add(audit)
+            logger.warning(
+                "auth", "device-risk",
+                f"Device auto-blacklisted: device_id={device.id} "
+                f"risk_score={device.risk_score}",
+            )
+
+        db.session.commit()
+    except Exception as exc:
+        logger.warning("auth", "device-risk", f"Failed to accumulate device risk: {exc}")
+
+
+def _check_login_spike(username: str, ip: str):
+    """Create an alert if failed login attempts exceed threshold within the window."""
+    try:
+        from src.utils.alert_writer import create_alert
+        from src.models.enums import AlertSeverity
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=FAILED_LOGIN_WINDOW_SECONDS)
+        count = AuditEvent.query.filter(
+            AuditEvent.event_type == AuditEventType.USER_LOGIN_FAILED.value,
+            AuditEvent.created_at >= cutoff,
+        ).count()
+
+        if count > FAILED_LOGIN_ALERT_THRESHOLD:
+            # Avoid duplicate alerts: check if one was already raised recently
+            from src.models.models import Alert
+            existing = Alert.query.filter(
+                Alert.alert_type == "FAILED_LOGIN_SPIKE",
+                Alert.created_at >= cutoff,
+            ).first()
+            if not existing:
+                create_alert(
+                    alert_type="FAILED_LOGIN_SPIKE",
+                    severity=AlertSeverity.HIGH.value,
+                    title=f"Login failure spike detected: {count} failures in last hour",
+                    description=f"Username: {username}, IP: {ip}, Count: {count}",
+                )
+    except Exception as exc:
+        logger.warning("auth", "alert", f"Failed to check login spike: {exc}")
 
 
 # ------------------------------------------------------------------
@@ -73,10 +196,12 @@ def register_guest():
         )
         refresh_token = create_refresh_token(user_id=user.id)
 
-        # Store refresh token hash
+        # Store refresh token hash (encrypted at rest + deterministic lookup)
+        _rt_hashed = hash_token(refresh_token)
         rt_record = RefreshToken(
             user_id=user.id,
-            token_hash=hash_token(refresh_token),
+            token_hash=_rt_hashed,
+            token_lookup_hash=_rt_hashed,
             expires_at=datetime.now(timezone.utc) + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
         )
         db.session.add(rt_record)
@@ -90,7 +215,9 @@ def register_guest():
                 "username": user.username,
                 "display_name": user.display_name,
                 "role": user.role,
+                "status": user.status,
                 "is_active": user.is_active,
+                "last_login_at": None,
                 "created_at": user.created_at.isoformat(),
             },
             "access_token": access_token,
@@ -137,21 +264,36 @@ def login():
             if not verify_captcha(captcha_id, str(captcha_answer)):
                 return error_response("CAPTCHA_INVALID", "Invalid captcha answer", status_code=403)
 
-        # Check device blacklist
+        # Check device blacklist using deterministic lookup hash with cooldown
         if device_fingerprint:
-            fp_hash = encrypt_field(device_fingerprint, config.ENCRYPTION_MASTER_KEY, "device_fingerprint")
+            fp_lookup = compute_fingerprint_lookup_hash(device_fingerprint)
             blacklisted_device = Device.query.filter_by(
-                fingerprint_hash=fp_hash,
+                fingerprint_lookup_hash=fp_lookup,
                 status=DeviceStatus.BLACKLISTED.value,
             ).first()
             if blacklisted_device:
-                retry_hours = config.DEVICE_BLACKLIST_RETRY_AFTER_HOURS
-                return error_response(
-                    "DEVICE_BLACKLISTED",
-                    "This device has been blacklisted",
-                    details={"retry_after": retry_hours * 3600},
-                    status_code=403,
-                )
+                now = datetime.now(timezone.utc)
+                bl_until = blacklisted_device.blacklisted_until
+                if bl_until and bl_until.tzinfo is None:
+                    bl_until = bl_until.replace(tzinfo=timezone.utc)
+                # If blacklisted_until is set and has passed, the cooldown expired
+                if bl_until and now >= bl_until:
+                    # Cooldown expired — reactivate the device
+                    blacklisted_device.status = DeviceStatus.ACTIVE.value
+                    blacklisted_device.blacklisted_until = None
+                    db.session.commit()
+                else:
+                    # Still blacklisted — compute retry_after from blacklisted_until
+                    if bl_until:
+                        retry_seconds = int((bl_until - now).total_seconds())
+                    else:
+                        retry_seconds = config.DEVICE_BLACKLIST_RETRY_AFTER_HOURS * 3600
+                    return error_response(
+                        "DEVICE_BLACKLISTED",
+                        "This device has been blacklisted",
+                        details={"retry_after": retry_seconds},
+                        status_code=403,
+                    )
 
         # Look up user and verify credentials
         user = User.query.filter_by(username=username).first()
@@ -167,6 +309,15 @@ def login():
             )
             db.session.add(audit)
             db.session.commit()
+
+            # Check for login failure spike and create alert
+            _check_login_spike(username, request.remote_addr)
+
+            # Accumulate device risk score on failed login
+            if device_fingerprint:
+                fp_lookup = compute_fingerprint_lookup_hash(device_fingerprint)
+                _accumulate_device_risk(fp_lookup, request.remote_addr)
+
             logger.info("auth", "login", f"Login failed for username={username}")
             return error_response("INVALID_CREDENTIALS", "Invalid username or password", status_code=401)
 
@@ -176,24 +327,35 @@ def login():
         # Success path
         reset_failures(username)
 
-        # Determine org_id from first active membership
+        # Record last login timestamp
+        user.last_login_at = datetime.now(timezone.utc)
+
+        # Determine org_id and effective role from first active membership
         org_id = None
+        membership_role = None
         active_membership = Membership.query.filter_by(user_id=user.id, is_active=True).first()
         if active_membership:
             org_id = active_membership.organization_id
+            membership_role = active_membership.role
+        effective_role = _resolve_effective_role(user.role, membership_role)
+
+        permission_codes = _get_user_permissions(user.id, org_id)
 
         access_token = create_access_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=effective_role,
             organization_id=org_id,
+            permissions=permission_codes,
         )
         refresh_token = create_refresh_token(user_id=user.id)
 
-        # Store refresh token hash
+        # Store refresh token hash (encrypted at rest + deterministic lookup)
+        _rt_hashed = hash_token(refresh_token)
         rt_record = RefreshToken(
             user_id=user.id,
-            token_hash=hash_token(refresh_token),
+            token_hash=_rt_hashed,
+            token_lookup_hash=_rt_hashed,
             expires_at=datetime.now(timezone.utc) + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
         )
         db.session.add(rt_record)
@@ -220,7 +382,9 @@ def login():
                 "username": user.username,
                 "display_name": user.display_name,
                 "role": user.role,
+                "status": user.status,
                 "is_active": user.is_active,
+                "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
                 "created_at": user.created_at.isoformat(),
             },
         })
@@ -251,7 +415,7 @@ def refresh():
             return error_response("INVALID_TOKEN", "Token is not a refresh token", status_code=401)
 
         token_hashed = hash_token(raw_token)
-        rt_record = RefreshToken.query.filter_by(token_hash=token_hashed).first()
+        rt_record = RefreshToken.query.filter_by(token_lookup_hash=token_hashed).first()
 
         if rt_record is None:
             return error_response("INVALID_TOKEN", "Refresh token not found", status_code=401)
@@ -272,23 +436,31 @@ def refresh():
             db.session.commit()
             return error_response("INVALID_TOKEN", "User not found or inactive", status_code=401)
 
-        # Determine org_id
+        # Determine org_id and effective role from membership
         org_id = None
+        membership_role = None
         active_membership = Membership.query.filter_by(user_id=user.id, is_active=True).first()
         if active_membership:
             org_id = active_membership.organization_id
+            membership_role = active_membership.role
+        effective_role = _resolve_effective_role(user.role, membership_role)
+
+        permission_codes = _get_user_permissions(user.id, org_id)
 
         new_access = create_access_token(
             user_id=user.id,
             username=user.username,
-            role=user.role,
+            role=effective_role,
             organization_id=org_id,
+            permissions=permission_codes,
         )
         new_refresh = create_refresh_token(user_id=user.id)
 
+        _new_rt_hashed = hash_token(new_refresh)
         new_rt_record = RefreshToken(
             user_id=user.id,
-            token_hash=hash_token(new_refresh),
+            token_hash=_new_rt_hashed,
+            token_lookup_hash=_new_rt_hashed,
             expires_at=datetime.now(timezone.utc) + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
         )
         db.session.add(new_rt_record)
@@ -346,7 +518,7 @@ def logout():
         # Revoke the provided refresh token
         if raw_refresh:
             rt_hash = hash_token(raw_refresh)
-            rt_record = RefreshToken.query.filter_by(token_hash=rt_hash, user_id=current.user_id).first()
+            rt_record = RefreshToken.query.filter_by(token_lookup_hash=rt_hash, user_id=current.user_id).first()
             if rt_record:
                 rt_record.is_revoked = True
 
@@ -432,11 +604,13 @@ def device_bind():
         if not fingerprint:
             return error_response("VALIDATION_ERROR", "fingerprint is required", status_code=400)
 
-        fp_hash = encrypt_field(fingerprint, config.ENCRYPTION_MASTER_KEY, "device_fingerprint")
+        fp_encrypted = encrypt_field(fingerprint, config.ENCRYPTION_MASTER_KEY, "device_fingerprint")
+        fp_lookup = compute_fingerprint_lookup_hash(fingerprint)
 
         device = Device(
             user_id=current.user_id,
-            fingerprint_hash=fp_hash,
+            fingerprint_hash=fp_encrypted,
+            fingerprint_lookup_hash=fp_lookup,
             device_name=device_name,
             risk_score=0.0,
             status=DeviceStatus.ACTIVE.value,
@@ -553,7 +727,9 @@ def me():
             "display_name": user.display_name,
             "email": user.email,
             "role": user.role,
+            "status": user.status,
             "is_active": user.is_active,
+            "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
             "created_at": user.created_at.isoformat(),
             "updated_at": user.updated_at.isoformat(),
             "memberships": memberships,

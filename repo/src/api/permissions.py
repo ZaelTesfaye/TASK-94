@@ -4,14 +4,18 @@ import json
 
 from flask import Blueprint, request, g
 
+from datetime import datetime, timezone, timedelta
+
 from src.models.base import db
-from src.models.models import Permission, UserPermission, Membership, User, Organization, AuditEvent
+from src.models.models import Permission, UserPermission, Membership, User, Organization, AuditEvent, RefreshToken
 from src.models.enums import RoleType, ROLE_HIERARCHY, AuditEventType
 from src.security.auth_middleware import require_auth, require_role
+from src.security.tokens import create_access_token, create_refresh_token, hash_token
 from src.utils.responses import success_response, error_response, list_response
 from src.utils.pagination import paginate_query
 from src.utils.validators import validate_required, validate_string, validate_uuid
 from src.logging import logger
+from src.config import config
 
 
 permissions_bp = Blueprint("permissions", __name__, url_prefix="/permissions")
@@ -54,6 +58,9 @@ def list_permissions():
                 "id": p.id,
                 "code": p.code,
                 "description": p.description,
+                "action": p.action,
+                "category": p.category,
+                "assignable": p.assignable,
                 "data_scope": p.data_scope,
                 "created_at": p.created_at.isoformat() if p.created_at else None,
             }
@@ -98,10 +105,16 @@ def create_permission():
 
         description = data.get("description")
         data_scope = data.get("data_scope")
+        action = data.get("action")
+        category = data.get("category")
+        assignable = data.get("assignable", True)
 
         permission = Permission(
             code=code,
             description=description,
+            action=action,
+            category=category,
+            assignable=assignable,
             data_scope=data_scope,
         )
         db.session.add(permission)
@@ -124,6 +137,9 @@ def create_permission():
                 "id": permission.id,
                 "code": permission.code,
                 "description": permission.description,
+                "action": permission.action,
+                "category": permission.category,
+                "assignable": permission.assignable,
                 "data_scope": permission.data_scope,
                 "created_at": permission.created_at.isoformat() if permission.created_at else None,
             },
@@ -166,6 +182,20 @@ def assign_permission():
 
         if not organization_id:
             return error_response("VALIDATION_ERROR", "Organization context is required")
+
+        # Enforce permission boundary: caller must belong to the target org (unless platform admin)
+        if current_user.role != RoleType.PLATFORM_ADMIN.value:
+            caller_membership = Membership.query.filter_by(
+                user_id=current_user.user_id,
+                organization_id=organization_id,
+                is_active=True,
+            ).first()
+            if not caller_membership:
+                return error_response(
+                    "FORBIDDEN",
+                    "You can only manage permissions in organizations you belong to",
+                    status_code=403,
+                )
 
         # Verify the permission exists
         permission = Permission.query.filter_by(code=permission_code).first()
@@ -285,6 +315,20 @@ def revoke_permission():
         if not organization_id:
             return error_response("VALIDATION_ERROR", "Organization context is required")
 
+        # Enforce permission boundary: caller must belong to the target org (unless platform admin)
+        if current_user.role != RoleType.PLATFORM_ADMIN.value:
+            caller_membership = Membership.query.filter_by(
+                user_id=current_user.user_id,
+                organization_id=organization_id,
+                is_active=True,
+            ).first()
+            if not caller_membership:
+                return error_response(
+                    "FORBIDDEN",
+                    "You can only manage permissions in organizations you belong to",
+                    status_code=403,
+                )
+
         # Find the permission record
         permission = Permission.query.filter_by(code=permission_code).first()
         if not permission:
@@ -387,7 +431,7 @@ def list_memberships():
 @permissions_bp.route("/memberships/switch-context", methods=["POST"])
 @require_auth
 def switch_context():
-    """Return org context and role for a membership the caller holds."""
+    """Switch active org context and return new tokens with the membership role."""
     try:
         data = request.get_json(silent=True) or {}
         current_user = g.current_user
@@ -412,6 +456,33 @@ def switch_context():
 
         org = Organization.query.get(organization_id)
 
+        # Resolve effective role: max(global user role, membership role)
+        user = User.query.get(current_user.user_id)
+        from src.api.auth import _resolve_effective_role, _get_user_permissions
+        effective_role = _resolve_effective_role(user.role, membership.role)
+
+        permission_codes = _get_user_permissions(user.id, organization_id)
+
+        # Issue new token pair scoped to the target org
+        access_token = create_access_token(
+            user_id=user.id,
+            username=user.username,
+            role=effective_role,
+            organization_id=organization_id,
+            permissions=permission_codes,
+        )
+        refresh_token = create_refresh_token(user_id=user.id)
+
+        _rt_hashed = hash_token(refresh_token)
+        rt_record = RefreshToken(
+            user_id=user.id,
+            token_hash=_rt_hashed,
+            token_lookup_hash=_rt_hashed,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
+        )
+        db.session.add(rt_record)
+        db.session.commit()
+
         logger.info(
             "api", "memberships",
             f"Context switch to org {organization_id}",
@@ -421,10 +492,14 @@ def switch_context():
             "organization_id": organization_id,
             "organization_name": org.name if org else None,
             "organization_slug": org.slug if org else None,
-            "role": membership.role,
+            "role": effective_role,
             "membership_id": membership.id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": config.JWT_ACCESS_TOKEN_EXPIRES_MINUTES * 60,
         })
 
     except Exception as exc:
+        db.session.rollback()
         logger.error("api", "memberships", f"Failed to switch context: {exc}")
         return error_response("INTERNAL_ERROR", "Failed to switch context", status_code=500)

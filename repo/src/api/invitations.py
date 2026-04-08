@@ -8,9 +8,10 @@ from datetime import datetime, timezone, timedelta
 from flask import Blueprint, request, g
 
 from src.models.base import db
-from src.models.models import InvitationCode, Membership, User, Organization, AuditEvent
+from src.models.models import InvitationCode, Membership, User, Organization, AuditEvent, RefreshToken
 from src.models.enums import RoleType, ROLE_HIERARCHY, InvitationStatus, AuditEventType
 from src.security.auth_middleware import require_auth, require_role
+from src.security.tokens import create_access_token, create_refresh_token, hash_token
 from src.utils.responses import success_response, error_response, list_response
 from src.utils.pagination import paginate_query
 from src.utils.validators import validate_required, validate_uuid
@@ -75,6 +76,20 @@ def create_invitation():
         org = Organization.query.get(organization_id)
         if not org:
             return error_response("NOT_FOUND", "Organization not found", status_code=404)
+
+        # Enforce authorization: caller must belong to the target org (unless platform admin)
+        if current_user.role != RoleType.PLATFORM_ADMIN.value:
+            caller_membership = Membership.query.filter_by(
+                user_id=current_user.user_id,
+                organization_id=organization_id,
+                is_active=True,
+            ).first()
+            if not caller_membership:
+                return error_response(
+                    "FORBIDDEN",
+                    "You can only create invitations for organizations you belong to",
+                    status_code=403,
+                )
 
         # Generate unique invitation code
         code = uuid.uuid4().hex[:12].upper()
@@ -285,6 +300,31 @@ def redeem_invitation():
             }),
         )
         db.session.add(audit)
+
+        # Re-issue tokens with the new membership role and org context
+        user = User.query.get(current_user.user_id)
+        from src.api.auth import _resolve_effective_role, _get_user_permissions
+        effective_role = _resolve_effective_role(user.role, membership.role)
+        org_id = invitation.organization_id
+        permission_codes = _get_user_permissions(user.id, org_id)
+
+        access_token = create_access_token(
+            user_id=user.id,
+            username=user.username,
+            role=effective_role,
+            organization_id=org_id,
+            permissions=permission_codes,
+        )
+        refresh_token = create_refresh_token(user_id=user.id)
+
+        _rt_hashed = hash_token(refresh_token)
+        rt_record = RefreshToken(
+            user_id=user.id,
+            token_hash=_rt_hashed,
+            token_lookup_hash=_rt_hashed,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
+        )
+        db.session.add(rt_record)
         db.session.commit()
 
         logger.info(
@@ -295,8 +335,11 @@ def redeem_invitation():
         return success_response({
             "membership_id": membership.id,
             "organization_id": invitation.organization_id,
-            "role": invitation.target_role,
+            "role": effective_role,
             "invitation_id": invitation.id,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": config.JWT_ACCESS_TOKEN_EXPIRES_MINUTES * 60,
         })
 
     except Exception as exc:

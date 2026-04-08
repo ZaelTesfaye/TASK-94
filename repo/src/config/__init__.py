@@ -22,7 +22,7 @@ class _Config:
     PORT: int = 5000
 
     # --- TLS Toggle (per guide Phase 1) ---
-    ENABLE_TLS: bool = False
+    ENABLE_TLS: bool = True
     TLS_CERT_PATH: str = "/app/certs/cert.pem"
     TLS_KEY_PATH: str = "/app/certs/key.pem"
 
@@ -72,7 +72,8 @@ class _Config:
 
     # --- Device Risk ---
     DEVICE_RISK_BLACKLIST_THRESHOLD: float = 0.9
-    DEVICE_BLACKLIST_RETRY_AFTER_HOURS: int = 24
+    DEVICE_RISK_INCREMENT_PER_FAILURE: float = 0.15
+    DEVICE_BLACKLIST_RETRY_AFTER_HOURS: int = 168  # 7 days
 
     # --- Export ---
     EXPORT_DIR: str = "/app/exports"
@@ -80,7 +81,7 @@ class _Config:
 
     # --- Backup ---
     BACKUP_DIR: str = "/app/backups"
-    BACKUP_RETENTION_DAYS: int = 30
+    BACKUP_RETENTION_DAYS: int = 14
     BACKUP_SCHEDULE_CRON: str = "0 2 * * *"  # 2 AM daily
 
     # --- Logging ---
@@ -90,6 +91,10 @@ class _Config:
     # --- Pagination ---
     DEFAULT_PAGE_SIZE: int = 20
     MAX_PAGE_SIZE: int = 100
+
+    # --- Admin Bootstrap ---
+    ADMIN_USERNAME: str = "admin"
+    ADMIN_PASSWORD: str = "admin"
 
     # --- Admin/Debug ---
     ENABLE_DEBUG_ENDPOINTS: bool = False

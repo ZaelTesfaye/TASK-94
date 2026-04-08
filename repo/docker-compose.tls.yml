@@ -1,0 +1,18 @@
+# Production TLS override.
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.tls.yml up --build
+services:
+  api:
+    environment:
+      - ENABLE_TLS=true
+      - TLS_CERT_PATH=/app/certs/cert.pem
+      - TLS_KEY_PATH=/app/certs/key.pem
+    command:
+      [
+        "gunicorn",
+        "--bind", "0.0.0.0:5000",
+        "--workers", "1",
+        "--threads", "4",
+        "--certfile", "/app/certs/cert.pem",
+        "--keyfile", "/app/certs/key.pem",
+        "src.app:create_app()",
+      ]

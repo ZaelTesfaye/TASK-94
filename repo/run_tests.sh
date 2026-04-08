@@ -21,7 +21,7 @@ echo "  Test Summary"
 echo "========================================="
 
 # Run with coverage for summary
-python -m pytest tests/ -v --tb=short --co -q 2>&1 | tail -1
+python -m pytest tests/ -v --tb=short --cov=src --cov-report=term-missing 2>&1 | tail -20
 echo ""
 
 if [ $UNIT_EXIT -ne 0 ] || [ $API_EXIT -ne 0 ]; then

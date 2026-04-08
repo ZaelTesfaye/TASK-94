@@ -95,12 +95,23 @@ def decode_token(token: str) -> dict | None:
 
 
 def hash_token(token: str) -> str:
-    """Create a SHA-256 hash of a token for safe storage.
+    """Create a keyed HMAC-SHA256 hash of a token for storage.
+
+    The returned hash serves two roles:
+    1. **Encrypted at-rest value** — stored in the ``token_hash`` column via
+       ``EncryptedText`` (AES-256-GCM on top of this HMAC).
+    2. **Deterministic lookup key** — stored in the ``token_lookup_hash``
+       column for indexed DB queries.
+
+    Uses the encryption master key for HMAC keying so the hash is
+    cryptographically bound to the key and useless without it.
 
     Args:
         token: The raw token string.
 
     Returns:
-        Hex-encoded SHA-256 hash.
+        Hex-encoded HMAC-SHA256 hash.
     """
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    import hmac as _hmac
+    key = config.ENCRYPTION_MASTER_KEY.encode("utf-8")
+    return _hmac.new(key, token.encode("utf-8"), hashlib.sha256).hexdigest()

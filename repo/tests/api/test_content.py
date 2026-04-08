@@ -27,46 +27,21 @@ def _grant_moderation_permission(db):
 
 
 def _get_admin_headers_with_moderation(client, db):
-    """Login as admin after granting moderation:review permission.
+    """Grant moderation:review permission to admin, then login to get a real token.
 
-    The permission must be in the JWT claims. Since the access_token
-    is created at login time from the user's role (platform_admin),
-    the require_permission decorator checks g.current_user.permissions
-    which comes from the JWT. We need the permission code in the token.
-
-    Approach: assign the permission to the admin user, then login.
-    The token's permissions list comes from the JWT payload which is
-    built at login time. Looking at the code, the access_token only
-    contains permissions from the payload explicitly passed, and
-    login does not populate permissions from UserPermission table.
-
-    So we need to work around this by patching the token or using
-    the require_permission logic. Let's check the middleware...
-
-    The middleware populates permissions from payload.get("permissions", []).
-    The login endpoint calls create_access_token without permissions arg.
-    So we need to ensure the admin token includes the permission.
-
-    We'll use a direct approach: patch via create_access_token.
+    FIX-15: Uses DB-assigned permissions via actual login flow instead of forging
+    a token. The login handler now loads permissions from DB and includes them
+    in the JWT claims (FIX-06).
     """
-    from src.models.models import User
-    from src.security.tokens import create_access_token
-
     _grant_moderation_permission(db)
-    admin = User.query.filter_by(username="admin").first()
 
-    # Determine org_id
-    from src.models.models import Membership
-    membership = Membership.query.filter_by(user_id=admin.id, is_active=True).first()
-    org_id = membership.organization_id if membership else None
-
-    token = create_access_token(
-        user_id=admin.id,
-        username=admin.username,
-        role=admin.role,
-        organization_id=org_id,
-        permissions=["moderation:review"],
-    )
+    # Login as admin — the login handler will load permissions from DB
+    resp = client.post("/auth/login", json={
+        "username": "admin",
+        "password": "admin",
+    })
+    data = resp.get_json()
+    token = data["data"]["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 

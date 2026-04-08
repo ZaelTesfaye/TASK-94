@@ -164,6 +164,70 @@ class TestLogout:
         assert resp.status_code == 401
 
 
+class TestCaptchaChallenge:
+    def test_captcha_required_after_threshold_failures(self, client, db):
+        """After CAPTCHA_THRESHOLD (3) failures, login should require captcha."""
+        username = f"captcha_{uuid.uuid4().hex[:8]}"
+        client.post("/auth/register-guest", json={
+            "username": username,
+            "password": "SecurePass1!",
+        })
+        # Fail 3 times to hit captcha threshold
+        for _ in range(3):
+            client.post("/auth/login", json={
+                "username": username,
+                "password": "WrongPassword!",
+            })
+
+        # Next attempt should require captcha
+        resp = client.post("/auth/login", json={
+            "username": username,
+            "password": "WrongPassword!",
+        })
+        assert resp.status_code == 403
+        data = resp.get_json()
+        assert data["error"]["code"] == "CAPTCHA_REQUIRED"
+        assert "challenge_id" in data["error"]["details"]
+        assert "challenge_text" in data["error"]["details"]
+
+    def test_valid_captcha_allows_login_attempt(self, client, db):
+        """After solving captcha, user should be able to attempt login."""
+        username = f"captcha_solve_{uuid.uuid4().hex[:8]}"
+        client.post("/auth/register-guest", json={
+            "username": username,
+            "password": "SecurePass1!",
+        })
+        # Fail 3 times
+        for _ in range(3):
+            client.post("/auth/login", json={
+                "username": username,
+                "password": "WrongPassword!",
+            })
+
+        # Get captcha challenge
+        resp = client.post("/auth/login", json={
+            "username": username,
+            "password": "WrongPassword!",
+        })
+        challenge = resp.get_json()["error"]["details"]
+        challenge_id = challenge["challenge_id"]
+
+        # Solve the captcha by looking up the expected answer in DB
+        from src.models.models import LoginChallenge
+        ch = LoginChallenge.query.filter_by(id=challenge_id).first()
+        correct_answer = ch.expected_answer
+
+        # Login with captcha (wrong password but captcha accepted — should get INVALID_CREDENTIALS, not CAPTCHA_REQUIRED)
+        resp = client.post("/auth/login", json={
+            "username": username,
+            "password": "WrongPassword!",
+            "captcha_id": challenge_id,
+            "captcha_answer": correct_answer,
+        })
+        # Should NOT be CAPTCHA_REQUIRED anymore — either INVALID_CREDENTIALS or success
+        assert resp.get_json()["error"]["code"] != "CAPTCHA_REQUIRED"
+
+
 class TestMe:
     def test_get_me(self, client, db):
         username = f"me_{uuid.uuid4().hex[:8]}"

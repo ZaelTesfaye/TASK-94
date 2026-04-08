@@ -27,7 +27,7 @@ A single-node, offline, Dockerized Flask API for learning management and resourc
 docker-compose up --build
 ```
 
-The API runs at http://localhost:5000. Default admin credentials: username=`admin`, password=`admin`.
+The API runs at http://localhost:5000. Default admin credentials: username=`admin`, password=`admin`. Override `ADMIN_PASSWORD` via environment variable before deploying to production — the application will refuse to start in non-development environments with the default password.
 
 ---
 
@@ -53,7 +53,7 @@ Generate self-signed certificates for local HTTPS:
 powershell ./scripts/generate-certs.ps1
 ```
 
-Then set `ENABLE_TLS=true` in docker-compose.yml environment. Certificates are mounted read-only at `/app/certs/`.
+TLS is enabled by default. Certificates are mounted read-only at `/app/certs/`. To disable TLS for local development, set `ENABLE_TLS=false`.
 
 ---
 
@@ -66,7 +66,7 @@ All environment variables are defined in `docker-compose.yml`. Defaults are deve
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `APP_ENV` | string | `development` | Application environment (`development`, `production`) |
-| `DEBUG` | bool | `true` | Enable debug mode and verbose error output |
+| `DEBUG` | bool | `false` | Enable debug mode and verbose error output. Disable in production. |
 | `SECRET_KEY` | string | `dev-secret-key-change-in-production` | Flask secret key for session and CSRF support |
 
 ### Database
@@ -143,8 +143,9 @@ All environment variables are defined in `docker-compose.yml`. Defaults are deve
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `DEVICE_RISK_BLACKLIST_THRESHOLD` | float | `0.9` | Risk score threshold to blacklist a device |
-| `DEVICE_BLACKLIST_RETRY_AFTER_HOURS` | int | `24` | Hours before a blacklisted device may retry |
+| `DEVICE_RISK_BLACKLIST_THRESHOLD` | float | `0.9` | Risk score threshold to auto-blacklist a device |
+| `DEVICE_RISK_INCREMENT_PER_FAILURE` | float | `0.15` | Risk score increment per failed login attempt |
+| `DEVICE_BLACKLIST_RETRY_AFTER_HOURS` | int | `168` | Hours before a blacklisted device may retry (default: 7 days) |
 
 ### Export
 
@@ -157,7 +158,7 @@ All environment variables are defined in `docker-compose.yml`. Defaults are deve
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
 | `BACKUP_DIR` | string | `/app/backups` | Directory for database backup files |
-| `BACKUP_RETENTION_DAYS` | int | `30` | Number of days to retain backup files |
+| `BACKUP_RETENTION_DAYS` | int | `14` | Number of days to retain backup files |
 | `BACKUP_SCHEDULE_CRON` | string | `0 2 * * *` | Cron expression for automated backup schedule |
 
 ### Logging
@@ -174,6 +175,13 @@ All environment variables are defined in `docker-compose.yml`. Defaults are deve
 | `DEFAULT_PAGE_SIZE` | int | `20` | Default number of items per page for list endpoints |
 | `MAX_PAGE_SIZE` | int | `100` | Maximum allowed items per page |
 
+### Admin Bootstrap
+
+| Variable | Type | Default | Description |
+|----------|------|---------|-------------|
+| `ADMIN_USERNAME` | string | `admin` | Bootstrap platform admin username. |
+| `ADMIN_PASSWORD` | string | `admin` | Bootstrap platform admin password. **Must be overridden in production** (`APP_ENV != development`); the application will refuse to start if the default remains. |
+
 ### Admin / Debug
 
 | Variable | Type | Default | Description |
@@ -184,7 +192,7 @@ All environment variables are defined in `docker-compose.yml`. Defaults are deve
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ENABLE_TLS` | bool | `false` | Enable HTTPS with TLS certificates |
+| `ENABLE_TLS` | bool | `true` | Enable HTTPS. Required in production. Set to `false` only for local development. |
 | `TLS_CERT_PATH` | string | `/app/certs/cert.pem` | Path to TLS certificate file |
 | `TLS_KEY_PATH` | string | `/app/certs/key.pem` | Path to TLS private key file |
 
@@ -213,11 +221,11 @@ Note: Tables are auto-created on first startup via `db.create_all()` for develop
 ## Run Commands
 
 ```bash
-# Development (with Docker)
+# Development (with Docker) — TLS disabled, runs at http://localhost:5000
 docker-compose up --build
 
-# Production (with TLS)
-ENABLE_TLS=true docker-compose up --build -d
+# Production (with TLS) — uses docker-compose.tls.yml overlay with gunicorn TLS termination
+docker-compose -f docker-compose.yml -f docker-compose.tls.yml up --build -d
 
 # Direct (no Docker)
 gunicorn --bind 0.0.0.0:5000 "src.app:create_app()"
@@ -241,7 +249,7 @@ python -m pytest tests/unit/ -v
 python -m pytest tests/api/ -v
 
 # With coverage
-python -m pytest tests/ --cov=backend --cov-report=term-missing
+python -m pytest tests/ --cov=src --cov-report=term-missing
 ```
 
 ---
@@ -309,3 +317,4 @@ python -m pytest tests/ --cov=backend --cov-report=term-missing
 | Security Architecture | `docs/security-model.md` | Security controls, threat model, and implementation details |
 | Data Model Reference | `docs/data-model.md` | Database schema, constraints, and relationship documentation |
 | Operations Guide | `docs/operational-runbook.md` | Deployment, backup, monitoring, and incident procedures |
+| Reviewer Dry-Run | `docs/reviewer-dry-run-template.md` | Section-by-section review checklist with decision placeholders |

@@ -18,7 +18,7 @@ from src.models.enums import (
     ContentQualityState, ContentType, ModerationAction,
     AuditEventType, RoleType,
 )
-from src.security.auth_middleware import require_auth, require_role, require_permission
+from src.security.auth_middleware import require_auth, require_role, require_permission, require_org_context, check_object_ownership, verify_org_scope
 from src.utils.responses import success_response, error_response, list_response
 from src.utils.pagination import paginate_query
 from src.utils.validators import validate_required
@@ -63,6 +63,7 @@ def _serialize_content_item(item: ContentItem) -> dict:
         "rating_count": item.rating_count,
         "view_count": item.view_count,
         "download_count": item.download_count,
+        "suppressed_until": item.suppressed_until.isoformat() if item.suppressed_until else None,
         "is_active": item.is_active,
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
@@ -114,7 +115,9 @@ def _serialize_download(dl: ContentDownload) -> dict:
 
 
 def _serialize_moderation_case(case: ModerationCase) -> dict:
-    """Serialize a ModerationCase model to dict."""
+    """Serialize a ModerationCase model to dict with role-based note masking."""
+    can_see_notes = _is_platform_admin() or _has_reviewer_role()
+
     return {
         "id": case.id,
         "content_id": case.content_id,
@@ -122,9 +125,9 @@ def _serialize_moderation_case(case: ModerationCase) -> dict:
         "reviewer_id": case.reviewer_id,
         "action": case.action,
         "reason": case.reason,
-        "decision_notes": case.decision_notes,
-        "appeal_notes": case.appeal_notes,
-        "appeal_decision_notes": case.appeal_decision_notes,
+        "decision_notes": case.decision_notes if can_see_notes else None,
+        "appeal_notes": case.appeal_notes if can_see_notes else None,
+        "appeal_decision_notes": case.appeal_decision_notes if can_see_notes else None,
         "appealed_at": case.appealed_at.isoformat() if case.appealed_at else None,
         "decided_at": case.decided_at.isoformat() if case.decided_at else None,
         "created_at": case.created_at.isoformat() if case.created_at else None,
@@ -141,6 +144,20 @@ def _has_reviewer_role() -> bool:
     """Check if the current user has a reviewer-level permission."""
     permissions = getattr(g.current_user, "permissions", []) or []
     return "moderation:review" in permissions
+
+
+def _has_org_access(user, organization_id) -> bool:
+    """Check if user has access to the given organization via membership."""
+    if _is_platform_admin():
+        return True
+    if getattr(user, "organization_id", None) == organization_id:
+        return True
+    membership = Membership.query.filter_by(
+        user_id=user.user_id,
+        organization_id=organization_id,
+        is_active=True,
+    ).first()
+    return membership is not None
 
 
 # ──────────────────────────────────────────
@@ -164,6 +181,14 @@ def create_content():
         body = data.get("body", "")
         content_type = data.get("content_type", ContentType.ARTICLE.value)
         organization_id = data["organization_id"]
+
+        # Enforce tenant isolation: verify caller has membership in the target org
+        if not _has_org_access(current, organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this organization",
+                status_code=403,
+            )
 
         # Validate content_type
         valid_content_types = [ct.value for ct in ContentType]
@@ -249,9 +274,19 @@ def list_content():
         search = request.args.get("search")
         organization_id = request.args.get("organization_id", current.organization_id)
 
+        # Enforce tenant isolation: verify caller has access to the requested org
+        if organization_id and not _has_org_access(current, organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this organization",
+                status_code=403,
+            )
+
         query = ContentItem.query
 
-        # Org scope
+        # Org scope — non-admin users MUST have an org filter
+        if not _is_platform_admin() and not organization_id:
+            organization_id = current.organization_id
         if organization_id:
             query = query.filter(ContentItem.organization_id == organization_id)
 
@@ -304,6 +339,90 @@ def list_content():
     except Exception as exc:
         db.session.rollback()
         logger.error("content", "list", f"Unexpected error: {exc}")
+        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+
+
+# ──────────────────────────────────────────
+# GET /content/recommendations
+# ──────────────────────────────────────────
+@content_bp.route("/content/recommendations", methods=["GET"])
+@require_auth
+def recommend_content():
+    """Return content recommendations for the current user.
+
+    Excludes content that is SUPPRESSED, DUPLICATE_DEMOTED, or RATING_DEMOTED,
+    and content the user has already interacted with (rated, downloaded,
+    favorited, or created).
+    """
+    try:
+        current = g.current_user
+        page = request.args.get("page", 1, type=int)
+        per_page = request.args.get("per_page", config.DEFAULT_PAGE_SIZE, type=int)
+        organization_id = request.args.get("organization_id", current.organization_id)
+
+        if organization_id and not _has_org_access(current, organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this organization",
+                status_code=403,
+            )
+
+        if not organization_id:
+            organization_id = current.organization_id
+        if not organization_id:
+            return error_response(
+                "ORG_CONTEXT_REQUIRED",
+                "Organization context required for recommendations",
+                status_code=403,
+            )
+
+        # Subqueries for content the user has already interacted with
+        rated_ids = db.session.query(ContentRating.content_id).filter(
+            ContentRating.user_id == current.user_id,
+        ).subquery()
+        downloaded_ids = db.session.query(ContentDownload.content_id).filter(
+            ContentDownload.user_id == current.user_id,
+        ).subquery()
+        favorited_ids = db.session.query(ContentFavorite.content_id).filter(
+            ContentFavorite.user_id == current.user_id,
+        ).subquery()
+
+        # Excluded quality states
+        excluded_states = [
+            ContentQualityState.SUPPRESSED.value,
+            ContentQualityState.DUPLICATE_DEMOTED.value,
+            ContentQualityState.RATING_DEMOTED.value,
+        ]
+
+        query = ContentItem.query.filter(
+            ContentItem.organization_id == organization_id,
+            ContentItem.is_active == True,
+            ContentItem.quality_state.notin_(excluded_states),
+            # Exclude content created by this user
+            ContentItem.creator_id != current.user_id,
+            # Exclude already-interacted content
+            ContentItem.id.notin_(rated_ids),
+            ContentItem.id.notin_(downloaded_ids),
+            ContentItem.id.notin_(favorited_ids),
+        ).order_by(
+            ContentItem.avg_rating.desc(),
+            ContentItem.rating_count.desc(),
+            ContentItem.created_at.desc(),
+        )
+
+        result = paginate_query(query, page, per_page)
+        items = [_serialize_content_item(item) for item in result["items"]]
+
+        logger.info(
+            "content", "recommendations",
+            f"Recommendations served: user={current.user_id} org={organization_id} count={len(items)}",
+        )
+
+        return list_response(items, result["pagination"])
+
+    except Exception as exc:
+        db.session.rollback()
+        logger.error("content", "recommendations", f"Unexpected error: {exc}")
         return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
 
 
@@ -453,6 +572,14 @@ def create_comment(content_id):
         if content_item is None:
             return error_response("NOT_FOUND", "Content item not found", status_code=404)
 
+        # Enforce tenant isolation
+        if not _has_org_access(current, content_item.organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this content item",
+                status_code=403,
+            )
+
         comment = ContentComment(
             user_id=current.user_id,
             content_id=content_id,
@@ -487,6 +614,14 @@ def add_favorite(content_id):
         content_item = ContentItem.query.get(content_id)
         if content_item is None:
             return error_response("NOT_FOUND", "Content item not found", status_code=404)
+
+        # Enforce tenant isolation
+        if not _has_org_access(current, content_item.organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this content item",
+                status_code=403,
+            )
 
         # Idempotent: check for existing favorite
         existing = ContentFavorite.query.filter_by(
@@ -568,6 +703,14 @@ def download_content(content_id):
         if content_item is None:
             return error_response("NOT_FOUND", "Content item not found", status_code=404)
 
+        # Enforce tenant isolation
+        if not _has_org_access(current, content_item.organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this content item",
+                status_code=403,
+            )
+
         # Create download record
         download = ContentDownload(
             user_id=current.user_id,
@@ -619,6 +762,14 @@ def report_content(content_id):
         content_item = ContentItem.query.get(content_id)
         if content_item is None:
             return error_response("NOT_FOUND", "Content item not found", status_code=404)
+
+        # Enforce tenant isolation
+        if not _has_org_access(current, content_item.organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this content item",
+                status_code=403,
+            )
 
         # Create moderation case
         case = ModerationCase(
@@ -675,6 +826,8 @@ def report_content(content_id):
 # ──────────────────────────────────────────
 @content_bp.route("/moderation/cases/<case_id>/decision", methods=["POST"])
 @require_auth
+@require_org_context
+@require_role("org_admin")
 @require_permission("moderation:review")
 def moderation_decision(case_id):
     try:
@@ -709,6 +862,15 @@ def moderation_decision(case_id):
         if content_item is None:
             return error_response("NOT_FOUND", "Associated content item not found", status_code=404)
 
+        # Object-level org-scope authorization: reviewer's organization must
+        # match the content's organization.  Platform admins bypass this.
+        if not verify_org_scope(content_item.organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have moderation authority over this organization's content",
+                status_code=403,
+            )
+
         before_state = json.dumps({
             "case_action": case.action,
             "content_quality_state": content_item.quality_state,
@@ -738,7 +900,7 @@ def moderation_decision(case_id):
             after_state=json.dumps({
                 "case_action": case.action,
                 "content_quality_state": content_item.quality_state,
-                "decision_notes": decision_notes,
+                "decision_notes": "[REDACTED]",
             }),
         )
         db.session.add(audit)
@@ -854,7 +1016,7 @@ def moderation_appeal(case_id):
             organization_id=content_item.organization_id,
             after_state=json.dumps({
                 "case_action": case.action,
-                "appeal_notes": appeal_notes[:200],
+                "appeal_notes": "[REDACTED]",
             }),
         )
         db.session.add(audit)
@@ -879,6 +1041,8 @@ def moderation_appeal(case_id):
 # ──────────────────────────────────────────
 @content_bp.route("/moderation/cases/<case_id>/appeal-decision", methods=["POST"])
 @require_auth
+@require_org_context
+@require_role("org_admin")
 @require_permission("moderation:review")
 def moderation_appeal_decision(case_id):
     try:
@@ -921,6 +1085,15 @@ def moderation_appeal_decision(case_id):
         if content_item is None:
             return error_response("NOT_FOUND", "Associated content item not found", status_code=404)
 
+        # Object-level org-scope authorization: reviewer's organization must
+        # match the content's organization.  Platform admins bypass this.
+        if not verify_org_scope(content_item.organization_id):
+            return error_response(
+                "FORBIDDEN",
+                "You do not have moderation authority over this organization's content",
+                status_code=403,
+            )
+
         before_state = json.dumps({
             "case_action": case.action,
             "content_quality_state": content_item.quality_state,
@@ -949,7 +1122,7 @@ def moderation_appeal_decision(case_id):
             after_state=json.dumps({
                 "case_action": case.action,
                 "content_quality_state": content_item.quality_state,
-                "appeal_decision_notes": appeal_decision_notes,
+                "appeal_decision_notes": "[REDACTED]",
             }),
         )
         db.session.add(audit)

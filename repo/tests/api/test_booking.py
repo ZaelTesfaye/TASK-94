@@ -281,6 +281,52 @@ class TestReservations:
         assert resp2.get_json()["error"]["code"] == "SLOT_UNAVAILABLE"
 
 
+    def test_partial_overlap_is_rejected(self, client, admin_headers, member_user, org_setup, db):
+        """A reservation starting mid-way through an existing one must be rejected."""
+        # Create resource
+        res_resp = client.post("/resources", json={
+            "name": "Overlap Test Room",
+            "organization_id": org_setup["id"],
+            "capacity": 1,
+        }, headers=admin_headers)
+        assert res_resp.status_code == 201
+        resource_id = res_resp.get_json()["data"]["id"]
+
+        # 2026-06-01 is a Monday (day_of_week=0)
+        slot_resp = client.post("/slot-templates", json={
+            "resource_id": resource_id,
+            "day_of_week": 0,
+            "start_time": "09:00",
+            "end_time": "17:00",
+            "quota": 1,
+        }, headers=admin_headers)
+        assert slot_resp.status_code == 201
+
+        resp1 = client.post("/reservations/hold", json={
+            "resource_id": resource_id,
+            "start_time": "2026-06-01T10:00:00Z",
+            "end_time": "2026-06-01T11:00:00Z",
+            "organization_id": org_setup["id"],
+        }, headers={
+            **member_user["headers"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        })
+        assert resp1.status_code == 201
+
+        # Partially overlapping window — different start/end, same resource
+        resp2 = client.post("/reservations/hold", json={
+            "resource_id": resource_id,
+            "start_time": "2026-06-01T10:30:00Z",
+            "end_time": "2026-06-01T11:30:00Z",
+            "organization_id": org_setup["id"],
+        }, headers={
+            **member_user["headers"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        })
+        assert resp2.status_code == 409
+        assert resp2.get_json()["error"]["code"] == "SLOT_UNAVAILABLE"
+
+
 class TestIdempotency:
     def test_idempotency_replay(self, client, admin_headers, member_user, org_setup, db):
         resource_id = _setup_booking(client, admin_headers, org_setup["id"], db)

@@ -46,7 +46,10 @@ def check_rate_limit(
         return True, headers
 
     # Calculate tokens to refill based on elapsed time
-    elapsed_seconds = (now - bucket.last_refill_at).total_seconds()
+    last_refill = bucket.last_refill_at
+    if last_refill.tzinfo is None:
+        last_refill = last_refill.replace(tzinfo=timezone.utc)
+    elapsed_seconds = (now - last_refill).total_seconds()
     elapsed_minutes = elapsed_seconds / 60.0
     tokens_to_add = int(elapsed_minutes * refill_rate)
 

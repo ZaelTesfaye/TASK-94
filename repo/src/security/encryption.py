@@ -1,6 +1,8 @@
 """AES-256-GCM encryption at rest - plan section 7 security controls."""
 
 import base64
+import hashlib
+import hmac
 import os
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -8,6 +10,18 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes
 
 from src.logging import logger
+
+
+def compute_fingerprint_lookup_hash(fingerprint: str) -> str:
+    """Deterministic HMAC-SHA256 keyed hash for device fingerprint DB lookup.
+
+    Uses the ENCRYPTION_MASTER_KEY with a fixed context so the same fingerprint
+    always produces the same hash. This is safe for equality lookups unlike
+    AES-GCM which uses a random IV.
+    """
+    from src.config import config
+    secret = config.ENCRYPTION_MASTER_KEY.encode("utf-8")
+    return hmac.new(secret, fingerprint.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def derive_key(master_key: str, context: str) -> bytes:

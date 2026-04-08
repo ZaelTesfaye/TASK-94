@@ -3,7 +3,8 @@
 from datetime import datetime, timezone, timedelta, time as dt_time
 
 from flask import Blueprint, request, g, make_response
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, text
+from sqlalchemy.exc import IntegrityError
 
 import hashlib
 import json
@@ -20,6 +21,56 @@ from src.logging import logger
 from src.config import config
 
 booking_bp = Blueprint("booking", __name__, url_prefix="")
+
+BOOKING_CONFLICT_ALERT_THRESHOLD = 5
+BOOKING_CONFLICT_WINDOW_SECONDS = 300  # 5 minutes
+
+
+def _record_booking_conflict(resource_id: str, user_id: str, organization_id: str):
+    """Record a BOOKING_CONFLICT audit event when an overlap is detected."""
+    try:
+        audit = AuditEvent(
+            event_type=AuditEventType.BOOKING_CONFLICT.value,
+            actor_id=user_id,
+            actor_ip=request.remote_addr,
+            target_type="Resource",
+            target_id=resource_id,
+            organization_id=organization_id,
+            metadata_json=json.dumps({"reason": "overlap_detected"}),
+        )
+        db.session.add(audit)
+        # Do not commit here — the caller's transaction handles it
+    except Exception as exc:
+        logger.warning("booking", "conflict-audit", f"Failed to record booking conflict: {exc}")
+
+
+def _check_booking_conflict_spike(resource_id: str):
+    """Create an alert if booking conflict events on a resource exceed threshold."""
+    try:
+        from src.utils.alert_writer import create_alert
+        from src.models.enums import AlertSeverity
+
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=BOOKING_CONFLICT_WINDOW_SECONDS)
+        from src.models.models import Alert
+        recent_conflicts = AuditEvent.query.filter(
+            AuditEvent.event_type == AuditEventType.BOOKING_CONFLICT.value,
+            AuditEvent.created_at >= cutoff,
+        ).count()
+
+        if recent_conflicts >= BOOKING_CONFLICT_ALERT_THRESHOLD:
+            existing = Alert.query.filter(
+                Alert.alert_type == "BOOKING_CONFLICT_SPIKE",
+                Alert.created_at >= cutoff,
+            ).first()
+            if not existing:
+                create_alert(
+                    alert_type="BOOKING_CONFLICT_SPIKE",
+                    severity=AlertSeverity.MEDIUM.value,
+                    title=f"High booking conflict rate on resource {resource_id}",
+                    description=f"Resource: {resource_id}, Recent conflicts: {recent_conflicts}",
+                )
+    except Exception as exc:
+        logger.warning("booking", "alert", f"Failed to check booking conflict spike: {exc}")
 
 
 # ──────────────────────────────────────────
@@ -516,6 +567,28 @@ def create_hold():
         if resource is None:
             return error_response("NOT_FOUND", "Resource not found", status_code=404)
 
+        # Verify resource belongs to the stated organization
+        if resource.organization_id != organization_id:
+            return error_response(
+                "VALIDATION_ERROR",
+                "Resource does not belong to the specified organization",
+                status_code=400,
+            )
+
+        # Verify caller has access to the organization (membership or platform admin)
+        if current.role != RoleType.PLATFORM_ADMIN.value:
+            caller_membership = Membership.query.filter_by(
+                user_id=current.user_id,
+                organization_id=organization_id,
+                is_active=True,
+            ).first()
+            if not caller_membership:
+                return error_response(
+                    "FORBIDDEN",
+                    "You do not have access to this organization",
+                    status_code=403,
+                )
+
         # Active hold cap per user
         held_count = Reservation.query.filter_by(
             user_id=current.user_id,
@@ -528,10 +601,17 @@ def create_hold():
                 status_code=429,
             )
 
+        # BEGIN IMMEDIATE serializes concurrent SQLite writers so the
+        # read-check-then-insert below is atomic.
+        db.session.execute(text("BEGIN IMMEDIATE"))
+
         # Overlap detection (with buffer) - quota-aware
         has_conflict, overlap_count = _check_overlap(resource_id, start_time, end_time)
         slot_quota = _get_slot_quota(resource_id, start_time, end_time)
         if overlap_count >= slot_quota:
+            _record_booking_conflict(resource_id, current.user_id, organization_id)
+            db.session.commit()
+            _check_booking_conflict_spike(resource_id)
             return error_response(
                 "SLOT_UNAVAILABLE",
                 "The requested time slot overlaps with an existing reservation",
@@ -581,8 +661,22 @@ def create_hold():
 
         return success_response(response_data, status_code=201)
 
+    except IntegrityError:
+        # DB-level unique index caught a concurrent race that slipped past
+        # the application-level overlap check
+        db.session.rollback()
+        try:
+            _record_booking_conflict(resource_id, current.user_id, organization_id)
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        logger.warning("booking", "hold", f"IntegrityError: concurrent overlap on resource={resource_id}")
+        return error_response("SLOT_UNAVAILABLE", "Slot taken by concurrent request.", status_code=409)
+
     except Exception as exc:
         db.session.rollback()
+        if "database is locked" in str(exc).lower():
+            return error_response("SLOT_UNAVAILABLE", "Concurrent booking conflict. Please retry.", status_code=409)
         logger.error("booking", "hold", f"Unexpected error: {exc}")
         return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
 
@@ -899,6 +993,9 @@ def reschedule_reservation(reservation_id):
         )
         slot_quota = _get_slot_quota(reservation.resource_id, new_start, new_end)
         if overlap_count >= slot_quota:
+            _record_booking_conflict(reservation.resource_id, current.user_id, reservation.organization_id)
+            db.session.commit()
+            _check_booking_conflict_spike(reservation.resource_id)
             return error_response(
                 "SLOT_UNAVAILABLE",
                 "The new time slot overlaps with an existing reservation",

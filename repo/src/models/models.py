@@ -6,11 +6,13 @@ Core tables + required support tables with all critical constraints.
 import uuid
 from datetime import datetime, timezone
 
+from sqlalchemy import TypeDecorator, Text
+
 from src.models.base import db
 from src.models.enums import (
     RoleType, ReservationStatus, ContentQualityState, ModerationAction,
     LearningEventType, ExportStatus, AlertSeverity, AlertStatus,
-    AuditEventType, InvitationStatus, DeviceStatus, ContentType,
+    AuditEventType, InvitationStatus, DeviceStatus, ContentType, UserStatus,
 )
 
 
@@ -22,6 +24,39 @@ def utcnow():
     return datetime.now(timezone.utc)
 
 
+class EncryptedText(TypeDecorator):
+    """SQLAlchemy type that encrypts on write and decrypts on read via AES-256-GCM.
+
+    Args:
+        context: HKDF context string for key derivation domain separation.
+                 Different contexts produce different derived keys from the
+                 same master key.
+    """
+    impl = Text
+    cache_ok = True
+
+    def __init__(self, context: str = "moderation_notes", *args, **kwargs):
+        self._context = context
+        super().__init__(*args, **kwargs)
+
+    def process_bind_param(self, value, dialect):
+        if value is not None:
+            from src.security.encryption import encrypt_field
+            from src.config import config
+            return encrypt_field(value, config.ENCRYPTION_MASTER_KEY, self._context)
+        return value
+
+    def process_result_value(self, value, dialect):
+        if value is not None:
+            from src.security.encryption import decrypt_field
+            from src.config import config
+            try:
+                return decrypt_field(value, config.ENCRYPTION_MASTER_KEY, self._context)
+            except Exception:
+                return value
+        return value
+
+
 # ──────────────────────────────────────────
 # 5.1 Core Tables
 # ──────────────────────────────────────────
@@ -31,11 +66,13 @@ class User(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     username = db.Column(db.String(255), unique=True, nullable=False, index=True)
-    password_hash = db.Column(db.Text, nullable=False)
+    password_hash = db.Column(EncryptedText("password_hash"), nullable=False)
     display_name = db.Column(db.String(255), nullable=True)
     email = db.Column(db.String(255), nullable=True)
     role = db.Column(db.String(50), nullable=False, default=RoleType.GUEST.value)
+    status = db.Column(db.String(50), nullable=False, default=UserStatus.ACTIVE.value)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    last_login_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -68,6 +105,7 @@ class Membership(db.Model):
     user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
     organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
     role = db.Column(db.String(50), nullable=False, default=RoleType.MEMBER.value)
+    data_scope = db.Column(db.String(50), nullable=True)  # organization/site/resource
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -81,6 +119,9 @@ class Permission(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     code = db.Column(db.String(255), unique=True, nullable=False, index=True)
     description = db.Column(db.Text, nullable=True)
+    action = db.Column(db.String(100), nullable=True)     # e.g. "read", "write", "delete"
+    category = db.Column(db.String(100), nullable=True)    # e.g. "booking", "content", "admin"
+    assignable = db.Column(db.Boolean, default=True, nullable=False)
     data_scope = db.Column(db.String(50), nullable=True)  # organization/site/resource/project
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -110,9 +151,11 @@ class Device(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
     fingerprint_hash = db.Column(db.String(512), nullable=False)
+    fingerprint_lookup_hash = db.Column(db.String(64), nullable=True, index=True)
     device_name = db.Column(db.String(255), nullable=True)
     risk_score = db.Column(db.Float, default=0.0, nullable=False)
     status = db.Column(db.String(50), nullable=False, default=DeviceStatus.ACTIVE.value)
+    blacklisted_until = db.Column(db.DateTime(timezone=True), nullable=True)
     last_seen_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -145,6 +188,8 @@ class SlotTemplate(db.Model):
     start_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=False)
     quota = db.Column(db.Integer, default=1, nullable=False)
+    timezone = db.Column(db.String(64), nullable=True, default="UTC")
+    buffer_minutes = db.Column(db.Integer, nullable=True, default=0)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -188,6 +233,7 @@ class ContentItem(db.Model):
     rating_count = db.Column(db.Integer, default=0, nullable=False)
     view_count = db.Column(db.Integer, default=0, nullable=False)
     download_count = db.Column(db.Integer, default=0, nullable=False)
+    suppressed_until = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -205,9 +251,9 @@ class ModerationCase(db.Model):
     reviewer_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=True)
     action = db.Column(db.String(50), nullable=False, default=ModerationAction.REPORT.value)
     reason = db.Column(db.Text, nullable=True)
-    decision_notes = db.Column(db.Text, nullable=True)
-    appeal_notes = db.Column(db.Text, nullable=True)
-    appeal_decision_notes = db.Column(db.Text, nullable=True)
+    decision_notes = db.Column(EncryptedText, nullable=True)
+    appeal_notes = db.Column(EncryptedText, nullable=True)
+    appeal_decision_notes = db.Column(EncryptedText, nullable=True)
     appealed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
@@ -226,6 +272,7 @@ class LearningEvent(db.Model):
     organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
     content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=True)
     event_type = db.Column(db.String(50), nullable=False)
+    duration_seconds = db.Column(db.Integer, nullable=True)
     metadata_json = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -290,7 +337,8 @@ class RefreshToken(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    token_hash = db.Column(db.String(512), unique=True, nullable=False, index=True)
+    token_hash = db.Column(EncryptedText("refresh_token_hash"), nullable=False)
+    token_lookup_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
     device_id = db.Column(db.String(36), db.ForeignKey("devices.id"), nullable=True)
     is_revoked = db.Column(db.Boolean, default=False, nullable=False)
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False)

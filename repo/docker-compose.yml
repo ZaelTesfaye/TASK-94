@@ -1,0 +1,63 @@
+version: "3.8"
+services:
+  api:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - app-data:/app/data
+      - app-exports:/app/exports
+      - app-backups:/app/backups
+      - ./certs:/app/certs:ro
+    environment:
+      - APP_ENV=development
+      - DEBUG=true
+      - SECRET_KEY=dev-secret-key-change-in-production
+      - DATABASE_URL=sqlite:////app/data/app.db
+      - JWT_SECRET_KEY=jwt-dev-secret-change-in-production
+      - JWT_ACCESS_TOKEN_EXPIRES_MINUTES=30
+      - JWT_REFRESH_TOKEN_EXPIRES_DAYS=14
+      - JWT_ALGORITHM=HS256
+      - JWT_ISSUER=learning-booking-api
+      - ENCRYPTION_MASTER_KEY=dev-master-key-32-bytes-change-me
+      - REQUEST_SIGNING_SECRET=dev-signing-secret-change-me
+      - REQUEST_SIGNING_SKEW_SECONDS=300
+      - NONCE_RETENTION_SECONDS=600
+      - RATE_LIMIT_DEFAULT_PER_MINUTE=60
+      - RATE_LIMIT_BURST=20
+      - LOGIN_MAX_FAILURES=5
+      - LOGIN_LOCKOUT_MINUTES=15
+      - CAPTCHA_THRESHOLD=3
+      - HOLD_EXPIRY_MINUTES=10
+      - BOOKING_BUFFER_MINUTES=5
+      - MAX_ACTIVE_HOLDS_PER_USER=3
+      - DEFAULT_SLOT_QUOTA=1
+      - IDEMPOTENCY_WINDOW_HOURS=24
+      - RATING_DEMOTION_MIN_COUNT=20
+      - RATING_DEMOTION_THRESHOLD=2.0
+      - APPEAL_WINDOW_DAYS=7
+      - APPEAL_MIN_NOTES_LENGTH=50
+      - INVITATION_EXPIRY_HOURS=72
+      - DEVICE_RISK_BLACKLIST_THRESHOLD=0.9
+      - DEVICE_BLACKLIST_RETRY_AFTER_HOURS=24
+      - EXPORT_DIR=/app/exports
+      - BACKUP_DIR=/app/backups
+      - BACKUP_RETENTION_DAYS=30
+      - BACKUP_SCHEDULE_CRON=0 2 * * *
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=structured
+      - DEFAULT_PAGE_SIZE=20
+      - MAX_PAGE_SIZE=100
+      - ENABLE_DEBUG_ENDPOINTS=false
+      - ENABLE_TLS=false
+      - TLS_CERT_PATH=/app/certs/cert.pem
+      - TLS_KEY_PATH=/app/certs/key.pem
+      - TIMEZONE=UTC
+    restart: unless-stopped
+
+volumes:
+  app-data:
+  app-exports:
+  app-backups:

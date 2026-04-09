@@ -121,8 +121,31 @@ def _store_idempotency(user_id: str, endpoint: str, key: str, response_code: int
     db.session.add(record)
 
 
+def _get_slot_buffer(resource_id: str, start_time: datetime, end_time: datetime) -> int:
+    """Return the buffer_minutes for the matching slot template, or the global default."""
+    target_date = start_time.date()
+    day_of_week = target_date.weekday()
+    request_start_time = start_time.time()
+    request_end_time = end_time.time()
+
+    template = SlotTemplate.query.filter(
+        SlotTemplate.resource_id == resource_id,
+        SlotTemplate.day_of_week == day_of_week,
+        SlotTemplate.is_active == True,
+        SlotTemplate.start_time <= request_start_time,
+        SlotTemplate.end_time >= request_end_time,
+    ).first()
+
+    if template and template.buffer_minutes is not None:
+        return template.buffer_minutes
+    return config.BOOKING_BUFFER_MINUTES
+
+
 def _check_overlap(resource_id: str, start_time: datetime, end_time: datetime, exclude_reservation_id: str = None):
     """Check for overlapping HELD/CONFIRMED reservations including buffer.
+
+    Uses the per-slot-template ``buffer_minutes`` when a matching template
+    exists, otherwise falls back to the global ``BOOKING_BUFFER_MINUTES``.
 
     Args:
         resource_id: The resource to check against.
@@ -134,7 +157,7 @@ def _check_overlap(resource_id: str, start_time: datetime, end_time: datetime, e
         Tuple of (has_conflict: bool, count: int) where count is the number
         of active reservations that overlap the buffered time window.
     """
-    buffer = timedelta(minutes=config.BOOKING_BUFFER_MINUTES)
+    buffer = timedelta(minutes=_get_slot_buffer(resource_id, start_time, end_time))
     buffered_start = start_time - buffer
     buffered_end = end_time + buffer
 
@@ -207,6 +230,7 @@ def _serialize_slot_template(template: SlotTemplate) -> dict:
         "start_time": template.start_time.strftime("%H:%M"),
         "end_time": template.end_time.strftime("%H:%M"),
         "quota": template.quota,
+        "buffer_minutes": template.buffer_minutes,
         "is_active": template.is_active,
         "created_at": template.created_at.isoformat(),
     }
@@ -365,6 +389,7 @@ def create_slot_template():
         start_time_str = data["start_time"]
         end_time_str = data["end_time"]
         quota = data.get("quota", config.DEFAULT_SLOT_QUOTA)
+        buffer_minutes = data.get("buffer_minutes")
 
         # Validate resource_id
         uuid_errors = validate_uuid(resource_id, "resource_id")
@@ -404,12 +429,18 @@ def create_slot_template():
                 if not membership:
                     return error_response("FORBIDDEN", "Resource does not belong to your organization", status_code=403)
 
+        # Validate buffer_minutes if provided
+        if buffer_minutes is not None:
+            if not isinstance(buffer_minutes, int) or buffer_minutes < 0:
+                return error_response("VALIDATION_ERROR", "buffer_minutes must be a non-negative integer", status_code=400)
+
         template = SlotTemplate(
             resource_id=resource_id,
             day_of_week=day_of_week,
             start_time=start_time,
             end_time=end_time,
             quota=quota,
+            buffer_minutes=buffer_minutes if buffer_minutes is not None else 0,
         )
         db.session.add(template)
         db.session.commit()

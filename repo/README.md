@@ -311,10 +311,10 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 | Document | Path | Description |
 |----------|------|-------------|
-| API Contracts | `docs/contracts.md` | Full API endpoint contracts with request/response schemas |
-| Requirement Traceability | `docs/requirements-matrix.md` | Prompt and question requirements mapped to code and tests |
-| Test Coverage Matrix | `docs/test-matrix.md` | Risk points mapped to test files and coverage status |
-| Security Architecture | `docs/security-model.md` | Security controls, threat model, and implementation details |
-| Data Model Reference | `docs/data-model.md` | Database schema, constraints, and relationship documentation |
-| Operations Guide | `docs/operational-runbook.md` | Deployment, backup, monitoring, and incident procedures |
-| Reviewer Dry-Run | `docs/reviewer-dry-run-template.md` | Section-by-section review checklist with decision placeholders |
+| API Contracts | `../docs/contracts.md` | Full API endpoint contracts with request/response schemas |
+| Requirement Traceability | `../docs/requirements-matrix.md` | Prompt and question requirements mapped to code and tests |
+| Test Coverage Matrix | `../docs/test-matrix.md` | Risk points mapped to test files and coverage status |
+| Security Architecture | `../docs/security-model.md` | Security controls, threat model, and implementation details |
+| Data Model Reference | `../docs/data-model.md` | Database schema, constraints, and relationship documentation |
+| Operations Guide | `../docs/operational-runbook.md` | Deployment, backup, monitoring, and incident procedures |
+| Reviewer Dry-Run | `../docs/reviewer-dry-run-template.md` | Section-by-section review checklist with decision placeholders |

@@ -202,10 +202,13 @@ class TestGetSlotQuota:
             db.session.add(resource)
             db.session.flush()
 
-            # 2099-06-01 is a Sunday (day_of_week=6)
+            start = datetime(2099, 6, 1, 10, 0, tzinfo=timezone.utc)
+            end = datetime(2099, 6, 1, 11, 0, tzinfo=timezone.utc)
+
+            # Compute day_of_week from the actual start date so the template matches
             template = SlotTemplate(
                 resource_id=resource.id,
-                day_of_week=6,
+                day_of_week=start.weekday(),
                 start_time=dt_time(9, 0),
                 end_time=dt_time(17, 0),
                 quota=3,
@@ -213,9 +216,6 @@ class TestGetSlotQuota:
             )
             db.session.add(template)
             db.session.commit()
-
-            start = datetime(2099, 6, 1, 10, 0, tzinfo=timezone.utc)
-            end = datetime(2099, 6, 1, 11, 0, tzinfo=timezone.utc)
 
             quota = _get_slot_quota(resource.id, start, end)
             assert quota == 3

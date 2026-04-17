@@ -11,9 +11,19 @@ from sqlalchemy.orm import reconstructor
 
 from src.models.base import db
 from src.models.enums import (
-    RoleType, ReservationStatus, ContentQualityState, ModerationAction,
-    LearningEventType, ExportStatus, AlertSeverity, AlertStatus,
-    AuditEventType, InvitationStatus, DeviceStatus, ContentType, UserStatus,
+    RoleType,
+    ReservationStatus,
+    ContentQualityState,
+    ModerationAction,
+    LearningEventType,
+    ExportStatus,
+    AlertSeverity,
+    AlertStatus,
+    AuditEventType,
+    InvitationStatus,
+    DeviceStatus,
+    ContentType,
+    UserStatus,
 )
 
 
@@ -33,6 +43,7 @@ class EncryptedText(TypeDecorator):
                  Different contexts produce different derived keys from the
                  same master key.
     """
+
     impl = Text
     cache_ok = True
 
@@ -44,6 +55,7 @@ class EncryptedText(TypeDecorator):
         if value is not None:
             from src.security.encryption import encrypt_field
             from src.config import config
+
             return encrypt_field(value, config.ENCRYPTION_MASTER_KEY, self._context)
         return value
 
@@ -51,6 +63,7 @@ class EncryptedText(TypeDecorator):
         if value is not None:
             from src.security.encryption import decrypt_field
             from src.config import config
+
             try:
                 return decrypt_field(value, config.ENCRYPTION_MASTER_KEY, self._context)
             except Exception:
@@ -61,6 +74,7 @@ class EncryptedText(TypeDecorator):
 # ──────────────────────────────────────────
 # 5.1 Core Tables
 # ──────────────────────────────────────────
+
 
 class User(db.Model):
     __tablename__ = "users"
@@ -75,7 +89,9 @@ class User(db.Model):
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     last_login_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
     memberships = db.relationship("Membership", back_populates="user", lazy="dynamic")
     devices = db.relationship("Device", back_populates="user", lazy="dynamic")
@@ -90,21 +106,33 @@ class Organization(db.Model):
     slug = db.Column(db.String(255), unique=True, nullable=False, index=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
-    memberships = db.relationship("Membership", back_populates="organization", lazy="dynamic")
-    resources = db.relationship("Resource", back_populates="organization", lazy="dynamic")
+    memberships = db.relationship(
+        "Membership", back_populates="organization", lazy="dynamic"
+    )
+    resources = db.relationship(
+        "Resource", back_populates="organization", lazy="dynamic"
+    )
 
 
 class Membership(db.Model):
     __tablename__ = "memberships"
     __table_args__ = (
-        db.UniqueConstraint("user_id", "organization_id", name="uq_membership_user_org"),
+        db.UniqueConstraint(
+            "user_id", "organization_id", name="uq_membership_user_org"
+        ),
     )
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
     role = db.Column(db.String(50), nullable=False, default=RoleType.MEMBER.value)
     data_scope = db.Column(db.String(50), nullable=True)  # organization/site/resource
     is_active = db.Column(db.Boolean, default=True, nullable=False)
@@ -120,24 +148,37 @@ class Permission(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     code = db.Column(db.String(255), unique=True, nullable=False, index=True)
     description = db.Column(db.Text, nullable=True)
-    action = db.Column(db.String(100), nullable=True)     # e.g. "read", "write", "delete"
-    category = db.Column(db.String(100), nullable=True)    # e.g. "booking", "content", "admin"
+    action = db.Column(db.String(100), nullable=True)  # e.g. "read", "write", "delete"
+    category = db.Column(
+        db.String(100), nullable=True
+    )  # e.g. "booking", "content", "admin"
     assignable = db.Column(db.Boolean, default=True, nullable=False)
-    data_scope = db.Column(db.String(50), nullable=True)  # organization/site/resource/project
+    data_scope = db.Column(
+        db.String(50), nullable=True
+    )  # organization/site/resource/project
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
 
 class UserPermission(db.Model):
     """Junction table for user-permission assignments."""
+
     __tablename__ = "user_permissions"
     __table_args__ = (
-        db.UniqueConstraint("user_id", "permission_id", "organization_id", name="uq_user_perm_org"),
+        db.UniqueConstraint(
+            "user_id", "permission_id", "organization_id", name="uq_user_perm_org"
+        ),
     )
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    permission_id = db.Column(db.String(36), db.ForeignKey("permissions.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=True, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    permission_id = db.Column(
+        db.String(36), db.ForeignKey("permissions.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=True, index=True
+    )
     granted_by = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -150,7 +191,9 @@ class Device(db.Model):
     __tablename__ = "devices"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
     fingerprint_hash = db.Column(db.String(512), nullable=False)
     fingerprint_lookup_hash = db.Column(db.String(64), nullable=True, index=True)
     device_name = db.Column(db.String(255), nullable=True)
@@ -167,24 +210,32 @@ class Resource(db.Model):
     __tablename__ = "resources"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
     name = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text, nullable=True)
     resource_type = db.Column(db.String(100), nullable=True)
     capacity = db.Column(db.Integer, default=1, nullable=False)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
     organization = db.relationship("Organization", back_populates="resources")
-    slot_templates = db.relationship("SlotTemplate", back_populates="resource", lazy="dynamic")
+    slot_templates = db.relationship(
+        "SlotTemplate", back_populates="resource", lazy="dynamic"
+    )
 
 
 class SlotTemplate(db.Model):
     __tablename__ = "slot_templates"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    resource_id = db.Column(db.String(36), db.ForeignKey("resources.id"), nullable=False, index=True)
+    resource_id = db.Column(
+        db.String(36), db.ForeignKey("resources.id"), nullable=False, index=True
+    )
     day_of_week = db.Column(db.Integer, nullable=False)  # 0=Monday, 6=Sunday
     start_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=False)
@@ -201,10 +252,18 @@ class Reservation(db.Model):
     __tablename__ = "reservations"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    resource_id = db.Column(db.String(36), db.ForeignKey("resources.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
-    status = db.Column(db.String(50), nullable=False, default=ReservationStatus.HELD.value)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    resource_id = db.Column(
+        db.String(36), db.ForeignKey("resources.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    status = db.Column(
+        db.String(50), nullable=False, default=ReservationStatus.HELD.value
+    )
     start_time = db.Column(db.DateTime(timezone=True), nullable=False)
     end_time = db.Column(db.DateTime(timezone=True), nullable=False)
     hold_expires_at = db.Column(db.DateTime(timezone=True), nullable=True)
@@ -212,7 +271,9 @@ class Reservation(db.Model):
     idempotency_key = db.Column(db.String(255), nullable=True, index=True)
     notes = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
     user = db.relationship("User", back_populates="reservations")
     resource = db.relationship("Resource")
@@ -223,12 +284,20 @@ class ContentItem(db.Model):
     __tablename__ = "content_items"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
-    creator_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    creator_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
     title = db.Column(db.String(500), nullable=False)
     body = db.Column(db.Text, nullable=True)
-    content_type = db.Column(db.String(50), nullable=False, default=ContentType.ARTICLE.value)
-    quality_state = db.Column(db.String(50), nullable=False, default=ContentQualityState.ACTIVE.value)
+    content_type = db.Column(
+        db.String(50), nullable=False, default=ContentType.ARTICLE.value
+    )
+    quality_state = db.Column(
+        db.String(50), nullable=False, default=ContentQualityState.ACTIVE.value
+    )
     fingerprint_hash = db.Column(db.String(64), nullable=True, index=True)
     avg_rating = db.Column(db.Float, default=0.0, nullable=False)
     rating_count = db.Column(db.Integer, default=0, nullable=False)
@@ -237,7 +306,9 @@ class ContentItem(db.Model):
     suppressed_until = db.Column(db.DateTime(timezone=True), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
     creator = db.relationship("User")
     organization = db.relationship("Organization")
@@ -247,10 +318,14 @@ class ModerationCase(db.Model):
     __tablename__ = "moderation_cases"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True)
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True
+    )
     reporter_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False)
     reviewer_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=True)
-    action = db.Column(db.String(50), nullable=False, default=ModerationAction.REPORT.value)
+    action = db.Column(
+        db.String(50), nullable=False, default=ModerationAction.REPORT.value
+    )
     reason = db.Column(db.Text, nullable=True)
     decision_notes = db.Column(EncryptedText, nullable=True)
     appeal_notes = db.Column(EncryptedText, nullable=True)
@@ -258,7 +333,9 @@ class ModerationCase(db.Model):
     appealed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     decided_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
     content = db.relationship("ContentItem")
     reporter = db.relationship("User", foreign_keys=[reporter_id])
@@ -269,9 +346,15 @@ class LearningEvent(db.Model):
     __tablename__ = "learning_events"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=True
+    )
     event_type = db.Column(db.String(50), nullable=False)
     duration_seconds = db.Column(db.Integer, nullable=True)
     metadata_json = db.Column(db.Text, nullable=True)
@@ -282,8 +365,12 @@ class Question(db.Model):
     __tablename__ = "questions"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
     question_text = db.Column(db.Text, nullable=False)
     correct_answer = db.Column(db.Text, nullable=False)
     options_json = db.Column(db.Text, nullable=True)
@@ -299,9 +386,15 @@ class Attempt(db.Model):
     __tablename__ = "attempts"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    question_id = db.Column(db.String(36), db.ForeignKey("questions.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    question_id = db.Column(
+        db.String(36), db.ForeignKey("questions.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
     answer_given = db.Column(db.Text, nullable=False)
     is_correct = db.Column(db.Boolean, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
@@ -314,12 +407,18 @@ class Export(db.Model):
     __tablename__ = "exports"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    requester_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
+    requester_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
     export_type = db.Column(db.String(100), nullable=False)
     parameters_json = db.Column(db.Text, nullable=True)
     parameters_hash = db.Column(db.String(64), nullable=True, index=True)
-    status = db.Column(db.String(50), nullable=False, default=ExportStatus.PENDING.value)
+    status = db.Column(
+        db.String(50), nullable=False, default=ExportStatus.PENDING.value
+    )
     file_path = db.Column(db.String(500), nullable=True)
     error_message = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
@@ -333,13 +432,18 @@ class Export(db.Model):
 # 5.2 Required Support Tables
 # ──────────────────────────────────────────
 
+
 class RefreshToken(db.Model):
     __tablename__ = "refresh_tokens"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
     token_hash = db.Column(EncryptedText("refresh_token_hash"), nullable=False)
-    token_lookup_hash = db.Column(db.String(64), unique=True, nullable=False, index=True)
+    token_lookup_hash = db.Column(
+        db.String(64), unique=True, nullable=False, index=True
+    )
     device_id = db.Column(db.String(36), db.ForeignKey("devices.id"), nullable=True)
     is_revoked = db.Column(db.Boolean, default=False, nullable=False)
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
@@ -363,9 +467,15 @@ class InvitationCode(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     code = db.Column(db.String(255), unique=True, nullable=False, index=True)
     issuer_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False)
-    target_role = db.Column(db.String(50), nullable=False, default=RoleType.MEMBER.value)
-    status = db.Column(db.String(50), nullable=False, default=InvitationStatus.PENDING.value)
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False
+    )
+    target_role = db.Column(
+        db.String(50), nullable=False, default=RoleType.MEMBER.value
+    )
+    status = db.Column(
+        db.String(50), nullable=False, default=InvitationStatus.PENDING.value
+    )
     redeemed_by_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=True)
     expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
@@ -383,7 +493,9 @@ class IdempotencyRecord(db.Model):
     )
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
     endpoint = db.Column(db.String(255), nullable=False)
     key_hash = db.Column(db.String(64), nullable=False, index=True)
     response_code = db.Column(db.Integer, nullable=False)
@@ -407,7 +519,9 @@ class RateLimitBucket(db.Model):
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     bucket_key = db.Column(db.String(255), nullable=False, index=True)
     tokens = db.Column(db.Integer, nullable=False)
-    last_refill_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
+    last_refill_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, nullable=False
+    )
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -434,7 +548,9 @@ class LoginFailureCounter(db.Model):
     first_failure_at = db.Column(db.DateTime(timezone=True), nullable=True)
     locked_until = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
     @reconstructor
     def _normalize_timezone_fields(self):
@@ -465,7 +581,9 @@ class Alert(db.Model):
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
     alert_type = db.Column(db.String(100), nullable=False, index=True)
-    severity = db.Column(db.String(50), nullable=False, default=AlertSeverity.MEDIUM.value)
+    severity = db.Column(
+        db.String(50), nullable=False, default=AlertSeverity.MEDIUM.value
+    )
     status = db.Column(db.String(50), nullable=False, default=AlertStatus.OPEN.value)
     title = db.Column(db.String(500), nullable=False)
     description = db.Column(db.Text, nullable=True)
@@ -475,20 +593,28 @@ class Alert(db.Model):
     resolved_by = db.Column(db.String(36), nullable=True)
     resolved_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
 
 class UserCohort(db.Model):
     __tablename__ = "user_cohorts"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
     cohort_tag = db.Column(db.String(100), nullable=False, index=True)
-    organization_id = db.Column(db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True)
+    organization_id = db.Column(
+        db.String(36), db.ForeignKey("organizations.id"), nullable=False, index=True
+    )
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
     __table_args__ = (
-        db.UniqueConstraint("user_id", "cohort_tag", "organization_id", name="uq_user_cohort"),
+        db.UniqueConstraint(
+            "user_id", "cohort_tag", "organization_id", name="uq_user_cohort"
+        ),
     )
 
 
@@ -499,19 +625,29 @@ class ContentRating(db.Model):
     )
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True
+    )
     score = db.Column(db.Integer, nullable=False)  # 1-5
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
-    updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
 
 
 class ContentComment(db.Model):
     __tablename__ = "content_comments"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True
+    )
     body = db.Column(db.Text, nullable=False)
     is_visible = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
@@ -524,8 +660,12 @@ class ContentFavorite(db.Model):
     )
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True
+    )
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -533,6 +673,10 @@ class ContentDownload(db.Model):
     __tablename__ = "content_downloads"
 
     id = db.Column(db.String(36), primary_key=True, default=generate_uuid)
-    user_id = db.Column(db.String(36), db.ForeignKey("users.id"), nullable=False, index=True)
-    content_id = db.Column(db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True)
+    user_id = db.Column(
+        db.String(36), db.ForeignKey("users.id"), nullable=False, index=True
+    )
+    content_id = db.Column(
+        db.String(36), db.ForeignKey("content_items.id"), nullable=False, index=True
+    )
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)

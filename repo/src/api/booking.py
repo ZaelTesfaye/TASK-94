@@ -11,9 +11,26 @@ import json
 import uuid
 
 from src.models.base import db
-from src.models.models import Resource, SlotTemplate, Reservation, IdempotencyRecord, AuditEvent, Membership
-from src.models.enums import RoleType, ReservationStatus, RESERVATION_TRANSITIONS, AuditEventType
-from src.security.auth_middleware import require_auth, require_role, require_org_context, check_object_ownership
+from src.models.models import (
+    Resource,
+    SlotTemplate,
+    Reservation,
+    IdempotencyRecord,
+    AuditEvent,
+    Membership,
+)
+from src.models.enums import (
+    RoleType,
+    ReservationStatus,
+    RESERVATION_TRANSITIONS,
+    AuditEventType,
+)
+from src.security.auth_middleware import (
+    require_auth,
+    require_role,
+    require_org_context,
+    check_object_ownership,
+)
 from src.utils.responses import success_response, error_response, list_response
 from src.utils.pagination import paginate_query
 from src.utils.validators import validate_required, validate_uuid, validate_datetime_str
@@ -41,7 +58,9 @@ def _record_booking_conflict(resource_id: str, user_id: str, organization_id: st
         db.session.add(audit)
         # Do not commit here — the caller's transaction handles it
     except Exception as exc:
-        logger.warning("booking", "conflict-audit", f"Failed to record booking conflict: {exc}")
+        logger.warning(
+            "booking", "conflict-audit", f"Failed to record booking conflict: {exc}"
+        )
 
 
 def _check_booking_conflict_spike(resource_id: str):
@@ -50,8 +69,11 @@ def _check_booking_conflict_spike(resource_id: str):
         from src.utils.alert_writer import create_alert
         from src.models.enums import AlertSeverity
 
-        cutoff = datetime.now(timezone.utc) - timedelta(seconds=BOOKING_CONFLICT_WINDOW_SECONDS)
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=BOOKING_CONFLICT_WINDOW_SECONDS
+        )
         from src.models.models import Alert
+
         recent_conflicts = AuditEvent.query.filter(
             AuditEvent.event_type == AuditEventType.BOOKING_CONFLICT.value,
             AuditEvent.created_at >= cutoff,
@@ -70,12 +92,15 @@ def _check_booking_conflict_spike(resource_id: str):
                     description=f"Resource: {resource_id}, Recent conflicts: {recent_conflicts}",
                 )
     except Exception as exc:
-        logger.warning("booking", "alert", f"Failed to check booking conflict spike: {exc}")
+        logger.warning(
+            "booking", "alert", f"Failed to check booking conflict spike: {exc}"
+        )
 
 
 # ──────────────────────────────────────────
 # Helper functions
 # ──────────────────────────────────────────
+
 
 def _hash_idempotency_key(key: str) -> str:
     """SHA-256 hash of an idempotency key."""
@@ -107,7 +132,9 @@ def _check_idempotency(user_id: str, endpoint: str, key: str):
     return record.response_code, record.response_body
 
 
-def _store_idempotency(user_id: str, endpoint: str, key: str, response_code: int, response_body: str):
+def _store_idempotency(
+    user_id: str, endpoint: str, key: str, response_code: int, response_body: str
+):
     """Store an idempotency record with configured TTL."""
     key_hash = _hash_idempotency_key(key)
     record = IdempotencyRecord(
@@ -116,7 +143,8 @@ def _store_idempotency(user_id: str, endpoint: str, key: str, response_code: int
         key_hash=key_hash,
         response_code=response_code,
         response_body=response_body,
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=config.IDEMPOTENCY_WINDOW_HOURS),
+        expires_at=datetime.now(timezone.utc)
+        + timedelta(hours=config.IDEMPOTENCY_WINDOW_HOURS),
     )
     db.session.add(record)
 
@@ -141,7 +169,12 @@ def _get_slot_buffer(resource_id: str, start_time: datetime, end_time: datetime)
     return config.BOOKING_BUFFER_MINUTES
 
 
-def _check_overlap(resource_id: str, start_time: datetime, end_time: datetime, exclude_reservation_id: str = None):
+def _check_overlap(
+    resource_id: str,
+    start_time: datetime,
+    end_time: datetime,
+    exclude_reservation_id: str = None,
+):
     """Check for overlapping HELD/CONFIRMED reservations including buffer.
 
     Uses the per-slot-template ``buffer_minutes`` when a matching template
@@ -247,7 +280,11 @@ def _serialize_reservation(reservation: Reservation) -> dict:
         "status": reservation.status,
         "start_time": reservation.start_time.isoformat(),
         "end_time": reservation.end_time.isoformat(),
-        "hold_expires_at": reservation.hold_expires_at.isoformat() if reservation.hold_expires_at else None,
+        "hold_expires_at": (
+            reservation.hold_expires_at.isoformat()
+            if reservation.hold_expires_at
+            else None
+        ),
         "version": reservation.version,
         "notes": reservation.notes,
         "created_at": reservation.created_at.isoformat(),
@@ -280,7 +317,12 @@ def create_resource():
         data = request.get_json(silent=True) or {}
         errors = validate_required(data, ["name", "organization_id"])
         if errors:
-            return error_response("VALIDATION_ERROR", "Missing required fields", details=errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Missing required fields",
+                details=errors,
+                status_code=400,
+            )
 
         name = data["name"]
         description = data.get("description")
@@ -290,7 +332,12 @@ def create_resource():
 
         uuid_errors = validate_uuid(organization_id, "organization_id")
         if uuid_errors:
-            return error_response("VALIDATION_ERROR", "Invalid organization_id", details=uuid_errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Invalid organization_id",
+                details=uuid_errors,
+                status_code=400,
+            )
 
         # Org admin can only create for their org; platform admin for any
         current = g.current_user
@@ -303,7 +350,11 @@ def create_resource():
                     is_active=True,
                 ).first()
                 if not membership:
-                    return error_response("FORBIDDEN", "You can only create resources for your own organization", status_code=403)
+                    return error_response(
+                        "FORBIDDEN",
+                        "You can only create resources for your own organization",
+                        status_code=403,
+                    )
 
         resource = Resource(
             name=name,
@@ -315,14 +366,20 @@ def create_resource():
         db.session.add(resource)
         db.session.commit()
 
-        logger.info("booking", "create-resource", f"Resource created: id={resource.id} org={organization_id}")
+        logger.info(
+            "booking",
+            "create-resource",
+            f"Resource created: id={resource.id} org={organization_id}",
+        )
 
         return success_response(_serialize_resource(resource), status_code=201)
 
     except Exception as exc:
         db.session.rollback()
         logger.error("booking", "create-resource", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -348,16 +405,32 @@ def list_resources():
                 query = query.filter(Resource.organization_id == org_filter)
         else:
             if current.organization_id:
-                query = query.filter(Resource.organization_id == current.organization_id)
+                query = query.filter(
+                    Resource.organization_id == current.organization_id
+                )
             else:
                 # User has no org context - return empty
-                return list_response([], {"page": 1, "per_page": per_page, "total": 0, "total_pages": 1, "has_next": False, "has_prev": False})
+                return list_response(
+                    [],
+                    {
+                        "page": 1,
+                        "per_page": per_page,
+                        "total": 0,
+                        "total_pages": 1,
+                        "has_next": False,
+                        "has_prev": False,
+                    },
+                )
 
         # Optional filters
         if resource_type:
             query = query.filter(Resource.resource_type == resource_type)
         if is_active is not None:
-            active_val = is_active.lower() in ("true", "1", "yes") if isinstance(is_active, str) else bool(is_active)
+            active_val = (
+                is_active.lower() in ("true", "1", "yes")
+                if isinstance(is_active, str)
+                else bool(is_active)
+            )
             query = query.filter(Resource.is_active == active_val)
 
         query = query.order_by(Resource.created_at.desc())
@@ -368,7 +441,9 @@ def list_resources():
 
     except Exception as exc:
         logger.error("booking", "list-resources", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -381,9 +456,16 @@ def create_slot_template():
     """Create a recurring slot template for a resource."""
     try:
         data = request.get_json(silent=True) or {}
-        errors = validate_required(data, ["resource_id", "day_of_week", "start_time", "end_time"])
+        errors = validate_required(
+            data, ["resource_id", "day_of_week", "start_time", "end_time"]
+        )
         if errors:
-            return error_response("VALIDATION_ERROR", "Missing required fields", details=errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Missing required fields",
+                details=errors,
+                status_code=400,
+            )
 
         resource_id = data["resource_id"]
         day_of_week = data["day_of_week"]
@@ -395,24 +477,41 @@ def create_slot_template():
         # Validate resource_id
         uuid_errors = validate_uuid(resource_id, "resource_id")
         if uuid_errors:
-            return error_response("VALIDATION_ERROR", "Invalid resource_id", details=uuid_errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Invalid resource_id",
+                details=uuid_errors,
+                status_code=400,
+            )
 
         # Validate day_of_week
         if not isinstance(day_of_week, int) or day_of_week < 0 or day_of_week > 6:
-            return error_response("VALIDATION_ERROR", "day_of_week must be an integer 0-6", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "day_of_week must be an integer 0-6",
+                status_code=400,
+            )
 
         # Parse times
         try:
             start_time = dt_time.fromisoformat(start_time_str)
         except (ValueError, TypeError):
-            return error_response("VALIDATION_ERROR", "start_time must be HH:MM format", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR", "start_time must be HH:MM format", status_code=400
+            )
         try:
             end_time = dt_time.fromisoformat(end_time_str)
         except (ValueError, TypeError):
-            return error_response("VALIDATION_ERROR", "end_time must be HH:MM format", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR", "end_time must be HH:MM format", status_code=400
+            )
 
         if start_time >= end_time:
-            return error_response("VALIDATION_ERROR", "start_time must be before end_time", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "start_time must be before end_time",
+                status_code=400,
+            )
 
         # Verify resource exists and belongs to caller's org
         resource = Resource.query.get(resource_id)
@@ -428,12 +527,20 @@ def create_slot_template():
                     is_active=True,
                 ).first()
                 if not membership:
-                    return error_response("FORBIDDEN", "Resource does not belong to your organization", status_code=403)
+                    return error_response(
+                        "FORBIDDEN",
+                        "Resource does not belong to your organization",
+                        status_code=403,
+                    )
 
         # Validate buffer_minutes if provided
         if buffer_minutes is not None:
             if not isinstance(buffer_minutes, int) or buffer_minutes < 0:
-                return error_response("VALIDATION_ERROR", "buffer_minutes must be a non-negative integer", status_code=400)
+                return error_response(
+                    "VALIDATION_ERROR",
+                    "buffer_minutes must be a non-negative integer",
+                    status_code=400,
+                )
 
         template = SlotTemplate(
             resource_id=resource_id,
@@ -446,14 +553,20 @@ def create_slot_template():
         db.session.add(template)
         db.session.commit()
 
-        logger.info("booking", "create-slot-template", f"Slot template created: id={template.id} resource={resource_id}")
+        logger.info(
+            "booking",
+            "create-slot-template",
+            f"Slot template created: id={template.id} resource={resource_id}",
+        )
 
         return success_response(_serialize_slot_template(template), status_code=201)
 
     except Exception as exc:
         db.session.rollback()
         logger.error("booking", "create-slot-template", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -468,19 +581,30 @@ def get_availability():
         date_str = request.args.get("date")
 
         if not resource_id:
-            return error_response("VALIDATION_ERROR", "resource_id is required", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR", "resource_id is required", status_code=400
+            )
         if not date_str:
-            return error_response("VALIDATION_ERROR", "date is required", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR", "date is required", status_code=400
+            )
 
         uuid_errors = validate_uuid(resource_id, "resource_id")
         if uuid_errors:
-            return error_response("VALIDATION_ERROR", "Invalid resource_id", details=uuid_errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Invalid resource_id",
+                details=uuid_errors,
+                status_code=400,
+            )
 
         # Parse date
         try:
             target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
         except ValueError:
-            return error_response("VALIDATION_ERROR", "date must be YYYY-MM-DD format", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR", "date must be YYYY-MM-DD format", status_code=400
+            )
 
         resource = Resource.query.get(resource_id)
         if resource is None:
@@ -495,12 +619,19 @@ def get_availability():
             is_active=True,
         ).all()
 
-        active_statuses = [ReservationStatus.HELD.value, ReservationStatus.CONFIRMED.value]
+        active_statuses = [
+            ReservationStatus.HELD.value,
+            ReservationStatus.CONFIRMED.value,
+        ]
         slots = []
 
         for template in templates:
-            slot_start = datetime.combine(target_date, template.start_time, tzinfo=timezone.utc)
-            slot_end = datetime.combine(target_date, template.end_time, tzinfo=timezone.utc)
+            slot_start = datetime.combine(
+                target_date, template.start_time, tzinfo=timezone.utc
+            )
+            slot_end = datetime.combine(
+                target_date, template.end_time, tzinfo=timezone.utc
+            )
 
             # Count existing active reservations overlapping this window
             booked_count = Reservation.query.filter(
@@ -511,24 +642,30 @@ def get_availability():
             ).count()
 
             available_count = max(0, template.quota - booked_count)
-            slots.append({
-                "slot_template_id": template.id,
-                "start_time": slot_start.isoformat(),
-                "end_time": slot_end.isoformat(),
-                "quota": template.quota,
-                "booked_count": booked_count,
-                "available_count": available_count,
-            })
+            slots.append(
+                {
+                    "slot_template_id": template.id,
+                    "start_time": slot_start.isoformat(),
+                    "end_time": slot_end.isoformat(),
+                    "quota": template.quota,
+                    "booked_count": booked_count,
+                    "available_count": available_count,
+                }
+            )
 
-        return success_response({
-            "resource_id": resource_id,
-            "date": date_str,
-            "slots": slots,
-        })
+        return success_response(
+            {
+                "resource_id": resource_id,
+                "date": date_str,
+                "slots": slots,
+            }
+        )
 
     except Exception as exc:
         logger.error("booking", "availability", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -544,13 +681,24 @@ def create_hold():
         # Idempotency-Key from header (required)
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
-            return error_response("VALIDATION_ERROR", "Idempotency-Key header is required", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Idempotency-Key header is required",
+                status_code=400,
+            )
 
         data = request.get_json(silent=True) or {}
 
-        errors = validate_required(data, ["resource_id", "start_time", "end_time", "organization_id"])
+        errors = validate_required(
+            data, ["resource_id", "start_time", "end_time", "organization_id"]
+        )
         if errors:
-            return error_response("VALIDATION_ERROR", "Missing required fields", details=errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Missing required fields",
+                details=errors,
+                status_code=400,
+            )
 
         resource_id = data["resource_id"]
         start_time_str = data["start_time"]
@@ -562,16 +710,28 @@ def create_hold():
         uuid_errors = validate_uuid(resource_id, "resource_id")
         uuid_errors += validate_uuid(organization_id, "organization_id")
         if uuid_errors:
-            return error_response("VALIDATION_ERROR", "Invalid UUID field", details=uuid_errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Invalid UUID field",
+                details=uuid_errors,
+                status_code=400,
+            )
 
         # Validate datetimes
         dt_errors = validate_datetime_str(start_time_str, "start_time")
         dt_errors += validate_datetime_str(end_time_str, "end_time")
         if dt_errors:
-            return error_response("VALIDATION_ERROR", "Invalid datetime format", details=dt_errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Invalid datetime format",
+                details=dt_errors,
+                status_code=400,
+            )
 
         # Idempotency check (before any mutations)
-        existing = _check_idempotency(current.user_id, "reservations/hold", idempotency_key)
+        existing = _check_idempotency(
+            current.user_id, "reservations/hold", idempotency_key
+        )
         if existing is not None:
             resp_code, resp_body = existing
             return _make_idempotent_response(resp_code, resp_body)
@@ -587,12 +747,18 @@ def create_hold():
             end_time = end_time.replace(tzinfo=timezone.utc)
 
         if start_time >= end_time:
-            return error_response("VALIDATION_ERROR", "start_time must be before end_time", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "start_time must be before end_time",
+                status_code=400,
+            )
 
         # Future-only check
         now = datetime.now(timezone.utc)
         if start_time <= now:
-            return error_response("VALIDATION_ERROR", "start_time must be in the future", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR", "start_time must be in the future", status_code=400
+            )
 
         # Check resource exists
         resource = Resource.query.get(resource_id)
@@ -680,14 +846,18 @@ def create_hold():
         # Prepare response body for idempotency storage
         response_data = _serialize_reservation(reservation)
         from src.utils.responses import _meta
+
         response_body = json.dumps({"data": response_data, "meta": _meta()})
 
-        _store_idempotency(current.user_id, "reservations/hold", idempotency_key, 201, response_body)
+        _store_idempotency(
+            current.user_id, "reservations/hold", idempotency_key, 201, response_body
+        )
 
         db.session.commit()
 
         logger.info(
-            "booking", "hold",
+            "booking",
+            "hold",
             f"Hold created: reservation_id={reservation.id} resource={resource_id} user={current.user_id}",
         )
 
@@ -702,15 +872,27 @@ def create_hold():
             db.session.commit()
         except Exception:
             db.session.rollback()
-        logger.warning("booking", "hold", f"IntegrityError: concurrent overlap on resource={resource_id}")
-        return error_response("SLOT_UNAVAILABLE", "Slot taken by concurrent request.", status_code=409)
+        logger.warning(
+            "booking",
+            "hold",
+            f"IntegrityError: concurrent overlap on resource={resource_id}",
+        )
+        return error_response(
+            "SLOT_UNAVAILABLE", "Slot taken by concurrent request.", status_code=409
+        )
 
     except Exception as exc:
         db.session.rollback()
         if "database is locked" in str(exc).lower():
-            return error_response("SLOT_UNAVAILABLE", "Concurrent booking conflict. Please retry.", status_code=409)
+            return error_response(
+                "SLOT_UNAVAILABLE",
+                "Concurrent booking conflict. Please retry.",
+                status_code=409,
+            )
         logger.error("booking", "hold", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -726,13 +908,22 @@ def confirm_reservation(reservation_id):
         # Idempotency-Key from header (required)
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
-            return error_response("VALIDATION_ERROR", "Idempotency-Key header is required", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Idempotency-Key header is required",
+                status_code=400,
+            )
 
         data = request.get_json(silent=True) or {}
 
         errors = validate_required(data, ["version"])
         if errors:
-            return error_response("VALIDATION_ERROR", "Missing required fields", details=errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Missing required fields",
+                details=errors,
+                status_code=400,
+            )
 
         version = data["version"]
 
@@ -750,7 +941,11 @@ def confirm_reservation(reservation_id):
 
         # Ownership check
         if not check_object_ownership(reservation):
-            return error_response("FORBIDDEN", "You do not have access to this reservation", status_code=403)
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this reservation",
+                status_code=403,
+            )
 
         # Optimistic concurrency check
         if version != reservation.version:
@@ -762,7 +957,9 @@ def confirm_reservation(reservation_id):
 
         # Check status is HELD (valid transition)
         current_status = ReservationStatus(reservation.status)
-        if ReservationStatus.CONFIRMED not in RESERVATION_TRANSITIONS.get(current_status, set()):
+        if ReservationStatus.CONFIRMED not in RESERVATION_TRANSITIONS.get(
+            current_status, set()
+        ):
             return error_response(
                 "INVALID_STATE",
                 f"Cannot confirm reservation in state {reservation.status}",
@@ -794,7 +991,8 @@ def confirm_reservation(reservation_id):
             db.session.commit()
 
             logger.info(
-                "booking", "confirm",
+                "booking",
+                "confirm",
                 f"Hold expired, auto-released: id={reservation.id} user={current.user_id}",
             )
             return error_response(
@@ -824,19 +1022,28 @@ def confirm_reservation(reservation_id):
         # Store idempotency record
         response_data = _serialize_reservation(reservation)
         from src.utils.responses import _meta
+
         response_body = json.dumps({"data": response_data, "meta": _meta()})
-        _store_idempotency(current.user_id, endpoint, idempotency_key, 200, response_body)
+        _store_idempotency(
+            current.user_id, endpoint, idempotency_key, 200, response_body
+        )
 
         db.session.commit()
 
-        logger.info("booking", "confirm", f"Reservation confirmed: id={reservation.id} user={current.user_id}")
+        logger.info(
+            "booking",
+            "confirm",
+            f"Reservation confirmed: id={reservation.id} user={current.user_id}",
+        )
 
         return success_response(response_data)
 
     except Exception as exc:
         db.session.rollback()
         logger.error("booking", "confirm", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -852,13 +1059,22 @@ def cancel_reservation(reservation_id):
         # Idempotency-Key from header (required)
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
-            return error_response("VALIDATION_ERROR", "Idempotency-Key header is required", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Idempotency-Key header is required",
+                status_code=400,
+            )
 
         data = request.get_json(silent=True) or {}
 
         errors = validate_required(data, ["version"])
         if errors:
-            return error_response("VALIDATION_ERROR", "Missing required fields", details=errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Missing required fields",
+                details=errors,
+                status_code=400,
+            )
 
         version = data["version"]
 
@@ -876,7 +1092,11 @@ def cancel_reservation(reservation_id):
 
         # Ownership check
         if not check_object_ownership(reservation):
-            return error_response("FORBIDDEN", "You do not have access to this reservation", status_code=403)
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this reservation",
+                status_code=403,
+            )
 
         # Version check
         if version != reservation.version:
@@ -888,7 +1108,9 @@ def cancel_reservation(reservation_id):
 
         # Check valid transition (HELD->CANCELLED or CONFIRMED->CANCELLED)
         current_status = ReservationStatus(reservation.status)
-        if ReservationStatus.CANCELLED not in RESERVATION_TRANSITIONS.get(current_status, set()):
+        if ReservationStatus.CANCELLED not in RESERVATION_TRANSITIONS.get(
+            current_status, set()
+        ):
             return error_response(
                 "INVALID_STATE",
                 f"Cannot cancel reservation in state {reservation.status}",
@@ -914,19 +1136,28 @@ def cancel_reservation(reservation_id):
         # Store idempotency record
         response_data = _serialize_reservation(reservation)
         from src.utils.responses import _meta
+
         response_body = json.dumps({"data": response_data, "meta": _meta()})
-        _store_idempotency(current.user_id, endpoint, idempotency_key, 200, response_body)
+        _store_idempotency(
+            current.user_id, endpoint, idempotency_key, 200, response_body
+        )
 
         db.session.commit()
 
-        logger.info("booking", "cancel", f"Reservation cancelled: id={reservation.id} user={current.user_id}")
+        logger.info(
+            "booking",
+            "cancel",
+            f"Reservation cancelled: id={reservation.id} user={current.user_id}",
+        )
 
         return success_response(response_data)
 
     except Exception as exc:
         db.session.rollback()
         logger.error("booking", "cancel", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -942,13 +1173,22 @@ def reschedule_reservation(reservation_id):
         # Idempotency-Key from header (required)
         idempotency_key = request.headers.get("Idempotency-Key")
         if not idempotency_key:
-            return error_response("VALIDATION_ERROR", "Idempotency-Key header is required", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Idempotency-Key header is required",
+                status_code=400,
+            )
 
         data = request.get_json(silent=True) or {}
 
         errors = validate_required(data, ["new_start_time", "new_end_time", "version"])
         if errors:
-            return error_response("VALIDATION_ERROR", "Missing required fields", details=errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Missing required fields",
+                details=errors,
+                status_code=400,
+            )
 
         new_start_str = data["new_start_time"]
         new_end_str = data["new_end_time"]
@@ -958,7 +1198,12 @@ def reschedule_reservation(reservation_id):
         dt_errors = validate_datetime_str(new_start_str, "new_start_time")
         dt_errors += validate_datetime_str(new_end_str, "new_end_time")
         if dt_errors:
-            return error_response("VALIDATION_ERROR", "Invalid datetime format", details=dt_errors, status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "Invalid datetime format",
+                details=dt_errors,
+                status_code=400,
+            )
 
         # Idempotency check
         endpoint = f"reservations/{reservation_id}/reschedule"
@@ -974,7 +1219,11 @@ def reschedule_reservation(reservation_id):
 
         # Ownership check
         if not check_object_ownership(reservation):
-            return error_response("FORBIDDEN", "You do not have access to this reservation", status_code=403)
+            return error_response(
+                "FORBIDDEN",
+                "You do not have access to this reservation",
+                status_code=403,
+            )
 
         # Version check
         if version != reservation.version:
@@ -1002,7 +1251,11 @@ def reschedule_reservation(reservation_id):
             new_end = new_end.replace(tzinfo=timezone.utc)
 
         if new_start >= new_end:
-            return error_response("VALIDATION_ERROR", "new_start_time must be before new_end_time", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "new_start_time must be before new_end_time",
+                status_code=400,
+            )
 
         # Same duration check
         old_duration = reservation.end_time - reservation.start_time
@@ -1017,15 +1270,24 @@ def reschedule_reservation(reservation_id):
         # Future-only check
         now = datetime.now(timezone.utc)
         if new_start <= now:
-            return error_response("VALIDATION_ERROR", "new_start_time must be in the future", status_code=400)
+            return error_response(
+                "VALIDATION_ERROR",
+                "new_start_time must be in the future",
+                status_code=400,
+            )
 
         # Overlap check on new window (exclude current reservation)
         has_conflict, overlap_count = _check_overlap(
-            reservation.resource_id, new_start, new_end, exclude_reservation_id=reservation.id,
+            reservation.resource_id,
+            new_start,
+            new_end,
+            exclude_reservation_id=reservation.id,
         )
         slot_quota = _get_slot_quota(reservation.resource_id, new_start, new_end)
         if overlap_count >= slot_quota:
-            _record_booking_conflict(reservation.resource_id, current.user_id, reservation.organization_id)
+            _record_booking_conflict(
+                reservation.resource_id, current.user_id, reservation.organization_id
+            )
             db.session.commit()
             _check_booking_conflict_spike(reservation.resource_id)
             return error_response(
@@ -1063,10 +1325,12 @@ def reschedule_reservation(reservation_id):
             target_id=reservation.id,
             organization_id=reservation.organization_id,
             before_state=before_state,
-            after_state=json.dumps({
-                "old_reservation": _serialize_reservation(reservation),
-                "new_reservation": _serialize_reservation(new_reservation),
-            }),
+            after_state=json.dumps(
+                {
+                    "old_reservation": _serialize_reservation(reservation),
+                    "new_reservation": _serialize_reservation(new_reservation),
+                }
+            ),
         )
         db.session.add(audit)
 
@@ -1076,13 +1340,17 @@ def reschedule_reservation(reservation_id):
             "new_reservation": _serialize_reservation(new_reservation),
         }
         from src.utils.responses import _meta
+
         response_body = json.dumps({"data": response_data, "meta": _meta()})
-        _store_idempotency(current.user_id, endpoint, idempotency_key, 200, response_body)
+        _store_idempotency(
+            current.user_id, endpoint, idempotency_key, 200, response_body
+        )
 
         db.session.commit()
 
         logger.info(
-            "booking", "reschedule",
+            "booking",
+            "reschedule",
             f"Reservation rescheduled: old={reservation.id} new={new_reservation.id} user={current.user_id}",
         )
 
@@ -1091,7 +1359,9 @@ def reschedule_reservation(reservation_id):
     except Exception as exc:
         db.session.rollback()
         logger.error("booking", "reschedule", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
@@ -1134,7 +1404,11 @@ def list_reservations():
                     from_dt = from_dt.replace(tzinfo=timezone.utc)
                 query = query.filter(Reservation.start_time >= from_dt)
             except ValueError:
-                return error_response("VALIDATION_ERROR", "start_date must be a valid ISO datetime", status_code=400)
+                return error_response(
+                    "VALIDATION_ERROR",
+                    "start_date must be a valid ISO datetime",
+                    status_code=400,
+                )
         if end_date:
             try:
                 to_dt = datetime.fromisoformat(end_date)
@@ -1142,7 +1416,11 @@ def list_reservations():
                     to_dt = to_dt.replace(tzinfo=timezone.utc)
                 query = query.filter(Reservation.start_time <= to_dt)
             except ValueError:
-                return error_response("VALIDATION_ERROR", "end_date must be a valid ISO datetime", status_code=400)
+                return error_response(
+                    "VALIDATION_ERROR",
+                    "end_date must be a valid ISO datetime",
+                    status_code=400,
+                )
 
         # Sorting
         if sort_by == "start_time":
@@ -1162,4 +1440,6 @@ def list_reservations():
 
     except Exception as exc:
         logger.error("booking", "list-reservations", f"Unexpected error: {exc}")
-        return error_response("INTERNAL_ERROR", "An unexpected error occurred", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "An unexpected error occurred", status_code=500
+        )

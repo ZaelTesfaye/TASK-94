@@ -8,7 +8,14 @@ from datetime import datetime, timezone, timedelta
 from flask import Blueprint, request, g
 
 from src.models.base import db
-from src.models.models import InvitationCode, Membership, User, Organization, AuditEvent, RefreshToken
+from src.models.models import (
+    InvitationCode,
+    Membership,
+    User,
+    Organization,
+    AuditEvent,
+    RefreshToken,
+)
 from src.models.enums import RoleType, ROLE_HIERARCHY, InvitationStatus, AuditEventType
 from src.security.auth_middleware import require_auth, require_role
 from src.security.tokens import create_access_token, create_refresh_token, hash_token
@@ -25,6 +32,7 @@ invitations_bp = Blueprint("invitations", __name__, url_prefix="/invitations")
 # ──────────────────────────────────────────
 # POST /invitations
 # ──────────────────────────────────────────
+
 
 @invitations_bp.route("", methods=["POST"])
 @require_auth
@@ -63,7 +71,9 @@ def create_invitation():
             caller_level = ROLE_HIERARCHY[RoleType(current_user.role)]
             target_level = ROLE_HIERARCHY[target_role_enum]
         except (ValueError, KeyError):
-            return error_response("ROLE_ERROR", "Invalid role configuration", status_code=500)
+            return error_response(
+                "ROLE_ERROR", "Invalid role configuration", status_code=500
+            )
 
         if target_level > caller_level:
             return error_response(
@@ -75,7 +85,9 @@ def create_invitation():
         # Verify organization exists
         org = Organization.query.get(organization_id)
         if not org:
-            return error_response("NOT_FOUND", "Organization not found", status_code=404)
+            return error_response(
+                "NOT_FOUND", "Organization not found", status_code=404
+            )
 
         # Enforce authorization: caller must belong to the target org (unless platform admin)
         if current_user.role != RoleType.PLATFORM_ADMIN.value:
@@ -115,19 +127,22 @@ def create_invitation():
             target_type="InvitationCode",
             target_id=invitation.id,
             organization_id=organization_id,
-            after_state=json.dumps({
-                "code": code,
-                "target_role": target_role,
-                "organization_id": organization_id,
-                "email_hint": email_hint,
-                "expires_at": expires_at.isoformat(),
-            }),
+            after_state=json.dumps(
+                {
+                    "code": code,
+                    "target_role": target_role,
+                    "organization_id": organization_id,
+                    "email_hint": email_hint,
+                    "expires_at": expires_at.isoformat(),
+                }
+            ),
         )
         db.session.add(audit)
         db.session.commit()
 
         logger.info(
-            "api", "invitations",
+            "api",
+            "invitations",
             f"Invitation created: code={code} org={organization_id} role={target_role}",
             user_id=current_user.user_id,
         )
@@ -139,8 +154,12 @@ def create_invitation():
                 "target_role": invitation.target_role,
                 "status": invitation.status,
                 "email_hint": email_hint,
-                "expires_at": invitation.expires_at.isoformat() if invitation.expires_at else None,
-                "created_at": invitation.created_at.isoformat() if invitation.created_at else None,
+                "expires_at": (
+                    invitation.expires_at.isoformat() if invitation.expires_at else None
+                ),
+                "created_at": (
+                    invitation.created_at.isoformat() if invitation.created_at else None
+                ),
             },
             status_code=201,
         )
@@ -148,12 +167,15 @@ def create_invitation():
     except Exception as exc:
         db.session.rollback()
         logger.error("api", "invitations", f"Failed to create invitation: {exc}")
-        return error_response("INTERNAL_ERROR", "Failed to create invitation", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "Failed to create invitation", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
 # GET /invitations
 # ──────────────────────────────────────────
+
 
 @invitations_bp.route("", methods=["GET"])
 @require_auth
@@ -175,10 +197,17 @@ def list_invitations():
                 query = query.filter(InvitationCode.organization_id == org_id)
             else:
                 # Org admin with no org context - return empty
-                return list_response([], {
-                    "page": 1, "per_page": per_page, "total": 0,
-                    "total_pages": 1, "has_next": False, "has_prev": False,
-                })
+                return list_response(
+                    [],
+                    {
+                        "page": 1,
+                        "per_page": per_page,
+                        "total": 0,
+                        "total_pages": 1,
+                        "has_next": False,
+                        "has_prev": False,
+                    },
+                )
 
         # Apply status filter
         if status_filter:
@@ -210,17 +239,25 @@ def list_invitations():
             for inv in result["items"]
         ]
 
-        logger.info("api", "invitations", f"Listed invitations page={page}", user_id=current_user.user_id)
+        logger.info(
+            "api",
+            "invitations",
+            f"Listed invitations page={page}",
+            user_id=current_user.user_id,
+        )
         return list_response(items, result["pagination"])
 
     except Exception as exc:
         logger.error("api", "invitations", f"Failed to list invitations: {exc}")
-        return error_response("INTERNAL_ERROR", "Failed to list invitations", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "Failed to list invitations", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
 # POST /invitations/redeem
 # ──────────────────────────────────────────
+
 
 @invitations_bp.route("/redeem", methods=["POST"])
 @require_auth
@@ -239,7 +276,9 @@ def redeem_invitation():
         # Find invitation by code
         invitation = InvitationCode.query.filter_by(code=code).first()
         if not invitation:
-            return error_response("NOT_FOUND", "Invitation code not found", status_code=404)
+            return error_response(
+                "NOT_FOUND", "Invitation code not found", status_code=404
+            )
 
         # Must be PENDING
         if invitation.status != InvitationStatus.PENDING.value:
@@ -257,7 +296,9 @@ def redeem_invitation():
         if exp_at and now > exp_at:
             invitation.status = InvitationStatus.EXPIRED.value
             db.session.commit()
-            return error_response("EXPIRED", "Invitation code has expired", status_code=410)
+            return error_response(
+                "EXPIRED", "Invitation code has expired", status_code=410
+            )
 
         # Create or update membership
         membership = Membership.query.filter_by(
@@ -292,18 +333,21 @@ def redeem_invitation():
             target_type="InvitationCode",
             target_id=invitation.id,
             organization_id=invitation.organization_id,
-            after_state=json.dumps({
-                "code": code,
-                "organization_id": invitation.organization_id,
-                "target_role": invitation.target_role,
-                "redeemed_by_id": current_user.user_id,
-            }),
+            after_state=json.dumps(
+                {
+                    "code": code,
+                    "organization_id": invitation.organization_id,
+                    "target_role": invitation.target_role,
+                    "redeemed_by_id": current_user.user_id,
+                }
+            ),
         )
         db.session.add(audit)
 
         # Re-issue tokens with the new membership role and org context
         user = User.query.get(current_user.user_id)
         from src.api.auth import _resolve_effective_role, _get_user_permissions
+
         effective_role = _resolve_effective_role(user.role, membership.role)
         org_id = invitation.organization_id
         permission_codes = _get_user_permissions(user.id, org_id)
@@ -322,35 +366,42 @@ def redeem_invitation():
             user_id=user.id,
             token_hash=_rt_hashed,
             token_lookup_hash=_rt_hashed,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
+            expires_at=datetime.now(timezone.utc)
+            + timedelta(days=config.JWT_REFRESH_TOKEN_EXPIRES_DAYS),
         )
         db.session.add(rt_record)
         db.session.commit()
 
         logger.info(
-            "api", "invitations",
+            "api",
+            "invitations",
             f"Invitation redeemed: code={code} org={invitation.organization_id}",
             user_id=current_user.user_id,
         )
-        return success_response({
-            "membership_id": membership.id,
-            "organization_id": invitation.organization_id,
-            "role": effective_role,
-            "invitation_id": invitation.id,
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "expires_in": config.JWT_ACCESS_TOKEN_EXPIRES_MINUTES * 60,
-        })
+        return success_response(
+            {
+                "membership_id": membership.id,
+                "organization_id": invitation.organization_id,
+                "role": effective_role,
+                "invitation_id": invitation.id,
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+                "expires_in": config.JWT_ACCESS_TOKEN_EXPIRES_MINUTES * 60,
+            }
+        )
 
     except Exception as exc:
         db.session.rollback()
         logger.error("api", "invitations", f"Failed to redeem invitation: {exc}")
-        return error_response("INTERNAL_ERROR", "Failed to redeem invitation", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "Failed to redeem invitation", status_code=500
+        )
 
 
 # ──────────────────────────────────────────
 # POST /invitations/revoke
 # ──────────────────────────────────────────
+
 
 @invitations_bp.route("/revoke", methods=["POST"])
 @require_auth
@@ -377,7 +428,11 @@ def revoke_invitation():
         # Verify invitation belongs to caller's org (unless platform admin)
         if current_user.role != RoleType.PLATFORM_ADMIN.value:
             if invitation.organization_id != current_user.organization_id:
-                return error_response("FORBIDDEN", "Invitation does not belong to your organization", status_code=403)
+                return error_response(
+                    "FORBIDDEN",
+                    "Invitation does not belong to your organization",
+                    status_code=403,
+                )
 
         # Must be PENDING to revoke
         if invitation.status != InvitationStatus.PENDING.value:
@@ -404,17 +459,22 @@ def revoke_invitation():
         db.session.commit()
 
         logger.info(
-            "api", "invitations",
+            "api",
+            "invitations",
             f"Invitation revoked: id={invitation_id}",
             user_id=current_user.user_id,
         )
-        return success_response({
-            "message": "Invitation revoked successfully",
-            "invitation_id": invitation_id,
-            "status": invitation.status,
-        })
+        return success_response(
+            {
+                "message": "Invitation revoked successfully",
+                "invitation_id": invitation_id,
+                "status": invitation.status,
+            }
+        )
 
     except Exception as exc:
         db.session.rollback()
         logger.error("api", "invitations", f"Failed to revoke invitation: {exc}")
-        return error_response("INTERNAL_ERROR", "Failed to revoke invitation", status_code=500)
+        return error_response(
+            "INTERNAL_ERROR", "Failed to revoke invitation", status_code=500
+        )

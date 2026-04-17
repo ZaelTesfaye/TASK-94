@@ -82,9 +82,14 @@ def create_app(testing: bool = False) -> Flask:
     if not testing:
         try:
             from src.scheduler import init_scheduler
+
             init_scheduler(app)
         except (ImportError, AttributeError):
-            logger.warning("app", "scheduler", "Scheduler not initialized (module missing or incomplete)")
+            logger.warning(
+                "app",
+                "scheduler",
+                "Scheduler not initialized (module missing or incomplete)",
+            )
 
     return app
 
@@ -138,7 +143,9 @@ def _register_error_handlers(app: Flask) -> None:
     @app.errorhandler(500)
     def internal_error(exc):
         logger.error("app", "unhandled", f"Internal server error: {exc}")
-        return _error_envelope("INTERNAL_SERVER_ERROR", "An unexpected error occurred.", 500)
+        return _error_envelope(
+            "INTERNAL_SERVER_ERROR", "An unexpected error occurred.", 500
+        )
 
 
 def _error_envelope(code: str, message: str, status_code: int):
@@ -172,8 +179,14 @@ def _register_before_request(app: Flask) -> None:
             return None
         is_valid, error_code = verify_request_signature(request)
         if not is_valid:
-            logger.warning("security", "signing", f"Request signing failed: {error_code}")
-            return _error_envelope("SIGNATURE_INVALID", f"Request signature validation failed: {error_code}", 401)
+            logger.warning(
+                "security", "signing", f"Request signing failed: {error_code}"
+            )
+            return _error_envelope(
+                "SIGNATURE_INVALID",
+                f"Request signature validation failed: {error_code}",
+                401,
+            )
 
     @app.before_request
     def enforce_rate_limit():
@@ -207,6 +220,7 @@ def _register_before_request(app: Flask) -> None:
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             from src.security.tokens import decode_token as _decode
+
             token_str = auth_header[7:]
             payload = _decode(token_str)
             if payload and payload.get("sub"):
@@ -217,7 +231,9 @@ def _register_before_request(app: Flask) -> None:
                     refill_rate=config.RATE_LIMIT_DEFAULT_PER_MINUTE,
                 )
                 if not user_allowed:
-                    resp = _error_envelope("TOO_MANY_REQUESTS", "Rate limit exceeded.", 429)
+                    resp = _error_envelope(
+                        "TOO_MANY_REQUESTS", "Rate limit exceeded.", 429
+                    )
                     response = resp[0] if isinstance(resp, tuple) else resp
                     for k, v in user_headers.items():
                         response.headers[k] = v
@@ -234,13 +250,16 @@ def _register_before_request(app: Flask) -> None:
         # X-Forwarded-Proto is set by reverse proxies; also check wsgi scheme
         proto = request.headers.get("X-Forwarded-Proto", request.scheme)
         if proto != "https":
-            logger.warning("security", "tls", f"Non-HTTPS request rejected: {request.url}")
+            logger.warning(
+                "security", "tls", f"Non-HTTPS request rejected: {request.url}"
+            )
             return _error_envelope("TLS_REQUIRED", "HTTPS is required.", 403)
 
     @app.before_request
     def log_request():
         logger.info(
-            "http", "request",
+            "http",
+            "request",
             f"{request.method} {request.path}",
             request_id=g.request_id,
             remote_addr=request.remote_addr,
@@ -253,7 +272,8 @@ def _register_after_request(app: Flask) -> None:
     @app.after_request
     def log_response(response):
         logger.info(
-            "http", "response",
+            "http",
+            "response",
             f"{request.method} {request.path} -> {response.status_code}",
             request_id=getattr(g, "request_id", None),
         )
@@ -287,16 +307,23 @@ def _create_overlap_index() -> None:
              cannot cover (partial overlaps like 10:00-11:00 vs 10:30-11:30).
     """
     from sqlalchemy import text
+
     try:
         # Keep the exact-duplicate safety net
-        db.session.execute(text("""
+        db.session.execute(
+            text(
+                """
             CREATE UNIQUE INDEX IF NOT EXISTS uix_reservation_no_overlap
             ON reservations (resource_id, start_time, end_time)
             WHERE status IN ('HELD', 'CONFIRMED')
-        """))
+        """
+            )
+        )
 
         # Trigger-based overlap rejection for INSERT
-        db.session.execute(text("""
+        db.session.execute(
+            text(
+                """
             CREATE TRIGGER IF NOT EXISTS trg_reservation_no_overlap_insert
             BEFORE INSERT ON reservations
             WHEN NEW.status IN ('HELD', 'CONFIRMED')
@@ -310,10 +337,14 @@ def _create_overlap_index() -> None:
                       AND end_time > NEW.start_time
                 );
             END
-        """))
+        """
+            )
+        )
 
         # Trigger-based overlap rejection for UPDATE (e.g. reschedule)
-        db.session.execute(text("""
+        db.session.execute(
+            text(
+                """
             CREATE TRIGGER IF NOT EXISTS trg_reservation_no_overlap_update
             BEFORE UPDATE ON reservations
             WHEN NEW.status IN ('HELD', 'CONFIRMED')
@@ -328,7 +359,9 @@ def _create_overlap_index() -> None:
                       AND end_time > NEW.start_time
                 );
             END
-        """))
+        """
+            )
+        )
 
         db.session.commit()
     except Exception:
@@ -362,7 +395,8 @@ def _bootstrap_platform_admin() -> None:
 
     if admin_password == "admin":
         logger.warning(
-            "app", "bootstrap",
+            "app",
+            "bootstrap",
             "Using default admin credentials — change ADMIN_PASSWORD before deploying to production",
         )
 

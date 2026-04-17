@@ -3,6 +3,7 @@
 .vscode/
 *.tmp.md
 temp/
+sessions
 # .tmp/
 
 # Environment variables

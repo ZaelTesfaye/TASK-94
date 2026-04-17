@@ -22,6 +22,9 @@ class TestPermissions:
             "description": "Should fail",
         }, headers=member_user["headers"])
         assert resp.status_code == 403
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "FORBIDDEN"
 
     def test_list_permissions(self, client, admin_headers, db):
         # Create one permission first
@@ -72,6 +75,9 @@ class TestPermissions:
             "organization_id": org_setup["id"],
         }, headers=admin_headers)
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert "data" in body
+        assert isinstance(body["data"]["message"], str)
 
 
 class TestMemberships:

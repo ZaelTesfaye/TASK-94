@@ -20,13 +20,30 @@ class TestAuditEvents:
         assert len(events) >= 1
 
     def test_list_audit_events(self, client, admin_headers, db):
-        # Trigger some activity first
+        # Trigger some activity first (login already generates events)
         client.get("/auth/me", headers=admin_headers)
 
         resp = client.get("/audit-events", headers=admin_headers)
         assert resp.status_code == 200
         body = resp.get_json()
         assert "data" in body
+        assert "pagination" in body
+        assert "page" in body["pagination"]
+        assert "total" in body["pagination"]
+        assert "per_page" in body["pagination"]
+        # At least the USER_LOGIN event from admin_headers fixture
+        assert len(body["data"]) >= 1
+        # Validate field structure of the first event
+        event = body["data"][0]
+        assert "id" in event
+        assert "event_type" in event
+        assert "actor_id" in event
+        assert "created_at" in event
+        assert isinstance(event["event_type"], str)
+        assert isinstance(event["created_at"], str)
+        # Verify we can find the USER_LOGIN event
+        event_types = [e["event_type"] for e in body["data"]]
+        assert "USER_LOGIN" in event_types
 
 
 class TestAlerts:

@@ -1,13 +1,16 @@
+Project Type: backend
+
 # Learning & Resource Booking Governance API
 
-A single-node, offline, Dockerized Flask API for learning management and resource booking with full governance. Designed for local deployment with no external service dependencies, providing authentication, role-based access control, booking with conflict prevention, content moderation, analytics, audit trails, and automated backups -- all backed by SQLite.
+A single-node, offline, Dockerized Flask API for learning management and resource booking with full governance. Designed for local deployment with no external service dependencies, providing authentication, role-based access control, booking with conflict prevention, content moderation, analytics, audit trails, and automated backups — all backed by SQLite.
 
 ---
 
 ## Table of Contents
 
 - [Quick Start](#quick-start)
-- [Setup - Local Development (without Docker)](#setup---local-development-without-docker)
+- [Verify the System is Working](#verify-the-system-is-working)
+- [Setup](#setup)
 - [TLS Local Setup](#tls-local-setup)
 - [Configuration Variables](#configuration-variables)
 - [Migration Commands](#migration-commands)
@@ -16,6 +19,7 @@ A single-node, offline, Dockerized Flask API for learning management and resourc
 - [Route Group Inventory](#route-group-inventory)
 - [Role Model Summary](#role-model-summary)
 - [Security Model Summary](#security-model-summary)
+- [Debug Endpoints](#debug-endpoints)
 - [Known Limitations and Manual Verification Boundaries](#known-limitations-and-manual-verification-boundaries)
 - [Static Evidence Index](#static-evidence-index)
 
@@ -27,25 +31,75 @@ A single-node, offline, Dockerized Flask API for learning management and resourc
 docker-compose up --build
 ```
 
-The API runs at http://localhost:5000. Default admin credentials: username=`admin`, password=`admin`. Override `ADMIN_PASSWORD` via environment variable before deploying to production — the application will refuse to start in non-development environments with the default password.
+The API runs at http://localhost:5000. Override `ADMIN_PASSWORD` via environment variable before deploying to production — the application will refuse to start in non-development environments with the default password.
+
+### Demo Credentials
+
+All demo users are seeded automatically on `docker-compose up` in development mode. No manual setup is required.
+
+| Role             | Username   | Password        | Organization     |
+|------------------|------------|-----------------|------------------|
+| Platform Admin   | admin      | admin           | (cross-org)      |
+| Org Admin        | orgadmin   | OrgAdminPass1!  | Demo Organization |
+| Member           | member     | MemberPass1!    | Demo Organization |
+| Guest            | guest      | GuestPass1!     | (no org)         |
+
+To create additional users at runtime:
+
+```bash
+# Register a new guest
+curl -X POST http://localhost:5000/auth/register-guest \
+  -H "Content-Type: application/json" \
+  -d '{"username": "newuser", "password": "SecurePass1!"}'
+
+# Promote via invitation (as admin or org_admin)
+curl -X POST http://localhost:5000/invitations \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin_token>" \
+  -d '{"organization_id": "<org_id>", "target_role": "member"}'
+```
 
 ---
 
-## Setup - Local Development (without Docker)
+## Verify the System is Working
+
+After running `docker-compose up --build`, verify the API is operational:
 
 ```bash
-cd repo
-pip install -r src/requirements.txt
-python -c "from src.app import create_app; app = create_app(); app.run(host='0.0.0.0', port=5000)"
+# 1. Check health
+curl http://localhost:5000/health
+
+# 2. Login as admin and capture the access token
+curl -X POST http://localhost:5000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin"}'
+
+# 3. Use the token from step 2 to hit a protected endpoint
+curl http://localhost:5000/admin/system-status \
+  -H "Authorization: Bearer <token_from_step_2>"
 ```
+
+A successful health check returns `200`. The login returns an `access_token` in the response body under `data.access_token`. The system-status endpoint returns `200` with system information when called with a valid admin token.
+
+---
+
+## Setup
+
+All setup and execution is Docker-only. No host-level Python, pip, or runtime installation is required or supported.
 
 ---
 
 ## TLS Local Setup
 
-Generate self-signed certificates for local HTTPS:
+Generate self-signed certificates for local HTTPS. Use the Dockerized command to avoid requiring `openssl` on the host:
 
 ```bash
+# Dockerized (no host openssl required)
+docker run --rm -v "$(pwd)/certs:/certs" alpine/openssl req -x509 \
+  -newkey rsa:2048 -nodes -keyout /certs/key.pem -out /certs/cert.pem \
+  -days 365 -subj "/CN=localhost"
+
+# Or use the host scripts if openssl is available:
 # Linux/macOS
 ./scripts/generate-certs.sh
 
@@ -206,12 +260,14 @@ All environment variables are defined in `docker-compose.yml`. Defaults are deve
 
 ## Migration Commands
 
+All migration commands must be run inside the Docker container:
+
 ```bash
 # Generate a new migration
-alembic revision --autogenerate -m "description"
+docker compose run --rm api alembic revision --autogenerate -m "description"
 
 # Run all pending migrations
-alembic upgrade head
+docker compose run --rm api alembic upgrade head
 ```
 
 Note: Tables are auto-created on first startup via `db.create_all()` for development convenience. For production deployments, use Alembic migrations exclusively.
@@ -226,9 +282,6 @@ docker-compose up --build
 
 # Production (with TLS) — uses docker-compose.tls.yml overlay with gunicorn TLS termination
 docker-compose -f docker-compose.yml -f docker-compose.tls.yml up --build -d
-
-# Direct (no Docker)
-gunicorn --bind 0.0.0.0:5000 "src.app:create_app()"
 ```
 
 ---
@@ -236,20 +289,8 @@ gunicorn --bind 0.0.0.0:5000 "src.app:create_app()"
 ## Test Commands
 
 ```bash
-# All tests
+# All tests (via Docker)
 ./run_tests.sh
-
-# Or directly with pytest
-python -m pytest tests/ -v
-
-# Unit tests only
-python -m pytest tests/unit/ -v
-
-# API/Integration tests only
-python -m pytest tests/api/ -v
-
-# With coverage
-python -m pytest tests/ --cov=src --cov-report=term-missing
 ```
 
 ---
@@ -296,11 +337,28 @@ python -m pytest tests/ --cov=src --cov-report=term-missing
 
 ---
 
+## Debug Endpoints
+
+Two debug endpoints are available for platform admins:
+
+- `GET /admin/debug/routes` — lists all registered Flask routes
+- `GET /admin/debug/config-redacted` — shows configuration with secrets redacted
+
+These endpoints are **disabled by default**. To enable them, set the environment variable:
+
+```
+ENABLE_DEBUG_ENDPOINTS=true
+```
+
+**Warning**: Debug endpoints must never be enabled in production. They expose internal route mappings and configuration details that could aid an attacker.
+
+---
+
 ## Known Limitations and Manual Verification Boundaries
 
 - **SQLite single-writer limitation**: SQLite does not support true concurrent writes. Write serialization is enforced via `BEGIN IMMEDIATE` transactions.
 - **Hold auto-release depends on scheduler**: The hold expiry job must be running for automatic release. Testable with manual time manipulation in unit tests.
-- **TLS certificate generation requires openssl on host**: The cert generation scripts depend on `openssl` being available in the host environment.
+- **TLS certificate generation**: The host cert generation scripts depend on `openssl`. A Dockerized alternative is provided in the TLS setup section for environments without host openssl.
 - **Backup scheduler tested via unit test**: Runtime cron execution verification is manual. The backup job logic is covered by unit tests, but actual scheduled execution in Docker requires manual observation.
 - **Export CSV generation is synchronous**: Suitable for moderate dataset sizes. Large exports may block the request thread.
 - **No email/SMS delivery**: Invitation codes are returned directly in the API response. There is no external notification mechanism.

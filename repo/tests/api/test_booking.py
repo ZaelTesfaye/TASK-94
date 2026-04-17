@@ -327,6 +327,47 @@ class TestReservations:
         assert resp2.get_json()["error"]["code"] == "SLOT_UNAVAILABLE"
 
 
+class TestListReservations:
+    def test_list_reservations(self, client, admin_headers, member_user, org_setup, db):
+        """Create and confirm a reservation, then list reservations and verify it appears."""
+        resource_id = _setup_booking(client, admin_headers, org_setup["id"], db)
+        start, end = _future_slot()
+
+        # Hold
+        hold_resp = client.post("/reservations/hold", json={
+            "resource_id": resource_id,
+            "start_time": start,
+            "end_time": end,
+            "organization_id": org_setup["id"],
+        }, headers={
+            **member_user["headers"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        })
+        assert hold_resp.status_code == 201
+        res_data = hold_resp.get_json()["data"]
+
+        # Confirm
+        confirm_resp = client.post(f"/reservations/{res_data['id']}/confirm", json={
+            "version": res_data["version"],
+        }, headers={
+            **member_user["headers"],
+            "Idempotency-Key": str(uuid.uuid4()),
+        })
+        assert confirm_resp.status_code == 200
+
+        # List reservations as admin
+        resp = client.get("/reservations", headers=admin_headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) >= 1
+        # Verify returned reservation has expected fields
+        reservation = body["data"][0]
+        assert "id" in reservation
+        assert "status" in reservation
+        assert "resource_id" in reservation
+        assert "start_time" in reservation
+
+
 class TestIdempotency:
     def test_idempotency_replay(self, client, admin_headers, member_user, org_setup, db):
         resource_id = _setup_booking(client, admin_headers, org_setup["id"], db)

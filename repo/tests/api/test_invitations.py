@@ -85,6 +85,41 @@ class TestInvitations:
         # Should be 410 (INVALID_STATE since already redeemed)
         assert resp.status_code == 410
 
+    def test_list_invitations(self, client, admin_headers, org_setup, db):
+        """Create an invitation then list invitations and verify it appears."""
+        inv = self._create_invitation(client, admin_headers, org_setup["id"])
+
+        resp = client.get("/invitations", headers=admin_headers)
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert len(body["data"]) >= 1
+        # Verify pagination envelope
+        assert "pagination" in body
+        assert "page" in body["pagination"]
+        assert "per_page" in body["pagination"]
+        assert "total" in body["pagination"]
+        assert body["pagination"]["total"] >= 1
+        # Verify the created invitation appears in the list
+        codes = [i["code"] for i in body["data"]]
+        assert inv["code"] in codes
+        # Full schema validation on each invitation object
+        for item in body["data"]:
+            assert "id" in item
+            assert "code" in item
+            assert "status" in item
+            assert "organization_id" in item
+            assert "issuer_id" in item
+            assert "target_role" in item
+            assert "created_at" in item
+            assert isinstance(item["id"], str)
+            assert isinstance(item["status"], str)
+            assert isinstance(item["created_at"], str)
+
+    def test_list_invitations_unauthorized(self, client, org_setup, db):
+        """Unauthenticated request to list invitations returns 401."""
+        resp = client.get("/invitations")
+        assert resp.status_code == 401
+
     def test_revoke_invitation(self, client, admin_headers, org_setup, db):
         inv = self._create_invitation(client, admin_headers, org_setup["id"])
 
@@ -92,3 +127,6 @@ class TestInvitations:
             "invitation_id": inv["id"],
         }, headers=admin_headers)
         assert resp.status_code == 200
+        body = resp.get_json()
+        assert "data" in body
+        assert body["data"]["status"] == "REVOKED"

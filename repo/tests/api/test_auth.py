@@ -59,6 +59,9 @@ class TestLogin:
             "password": "WrongPassword!",
         })
         assert resp.status_code == 401
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "INVALID_CREDENTIALS"
 
     def test_login_lockout_after_failures(self, client, db):
         username = f"lockout_{uuid.uuid4().hex[:8]}"
@@ -92,6 +95,9 @@ class TestLogin:
             "password": "BadPassword!",
         })
         assert resp.status_code == 423
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "ACCOUNT_LOCKED"
 
 
 class TestRefreshToken:
@@ -120,6 +126,9 @@ class TestRefreshToken:
             "refresh_token": "garbage.token.value",
         })
         assert resp.status_code == 401
+        body = resp.get_json()
+        assert "error" in body
+        assert isinstance(body["error"]["message"], str)
 
 
 class TestLogout:
@@ -138,6 +147,9 @@ class TestLogout:
 
         resp = client.post("/auth/logout", headers=headers)
         assert resp.status_code == 204
+        # Verify the token is now revoked
+        me_resp = client.get("/auth/me", headers=headers)
+        assert me_resp.status_code == 401
 
     def test_logout_all_revokes_tokens(self, client, db):
         username = f"logoutall_{uuid.uuid4().hex[:8]}"
@@ -277,3 +289,7 @@ class TestDevice:
             "device_id": device_id,
         }, headers=headers)
         assert resp.status_code == 204
+        # Verify the device was actually unbound by checking it's gone
+        from src.models.models import Device
+        device = Device.query.get(device_id)
+        assert device is None or device.status != "ACTIVE"

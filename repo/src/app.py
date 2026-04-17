@@ -76,6 +76,7 @@ def create_app(testing: bool = False) -> Flask:
         db.create_all()
         _create_overlap_index()
         _bootstrap_platform_admin()
+        _seed_demo_users()
 
     # --- Scheduler ---
     if not testing:
@@ -369,3 +370,57 @@ def _bootstrap_platform_admin() -> None:
     db.session.add(admin)
     db.session.commit()
     logger.info("app", "bootstrap", f"Platform admin created: {admin_username}")
+
+
+def _seed_demo_users() -> None:
+    """Seed demo users for each role so reviewers can log in immediately.
+
+    Only runs in development/testing environments and only when the demo
+    org does not yet exist.  Credentials are documented in the README.
+    """
+    if config.APP_ENV not in ("development", "testing"):
+        return
+
+    from src.models.models import User, Organization, Membership
+    from src.models.enums import RoleType, UserStatus
+    from src.security.passwords import hash_password
+
+    # Skip if already seeded
+    if Organization.query.filter_by(slug="demo-org").first():
+        return
+
+    # Create the demo organization
+    org = Organization(name="Demo Organization", slug="demo-org", is_active=True)
+    db.session.add(org)
+    db.session.flush()
+
+    demo_users = [
+        ("orgadmin", "OrgAdminPass1!", RoleType.ORG_ADMIN),
+        ("member", "MemberPass1!", RoleType.MEMBER),
+        ("guest", "GuestPass1!", RoleType.GUEST),
+    ]
+
+    for username, password, role in demo_users:
+        user = User(
+            username=username,
+            password_hash=hash_password(password),
+            display_name=f"Demo {role.value}",
+            role=role.value,
+            status=UserStatus.ACTIVE.value,
+            is_active=True,
+        )
+        db.session.add(user)
+        db.session.flush()
+
+        # All non-guest demo users get a membership in the demo org
+        if role != RoleType.GUEST:
+            m = Membership(
+                user_id=user.id,
+                organization_id=org.id,
+                role=role.value,
+                is_active=True,
+            )
+            db.session.add(m)
+
+    db.session.commit()
+    logger.info("app", "bootstrap", "Demo users seeded: orgadmin, member, guest")

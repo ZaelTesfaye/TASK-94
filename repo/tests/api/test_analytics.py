@@ -134,6 +134,116 @@ class TestDifficultyAnalytics:
         assert len(data["results"]) >= 1
 
 
+class TestWrongAnswers:
+    def test_wrong_answers(self, client, admin_headers, member_user, org_setup, db):
+        from src.models.models import ContentItem, Question, Attempt
+
+        content = ContentItem(
+            organization_id=org_setup["id"],
+            creator_id=member_user["user_id"],
+            title="WA Quiz",
+            body="body",
+            content_type="QUIZ",
+        )
+        db.session.add(content)
+        db.session.flush()
+
+        question = Question(
+            content_id=content.id,
+            organization_id=org_setup["id"],
+            question_text="What is 1+1?",
+            correct_answer="2",
+        )
+        db.session.add(question)
+        db.session.flush()
+
+        # 2 wrong, 1 correct
+        for is_correct in [False, False, True]:
+            attempt = Attempt(
+                user_id=member_user["user_id"],
+                question_id=question.id,
+                organization_id=org_setup["id"],
+                answer_given="2" if is_correct else "3",
+                is_correct=is_correct,
+            )
+            db.session.add(attempt)
+        db.session.commit()
+
+        start_date = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+
+        resp = client.get(
+            f"/analytics/wrong-answers"
+            f"?organization_id={org_setup['id']}"
+            f"&start_date={start_date}",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert "results" in data
+        assert len(data["results"]) >= 1
+        row = data["results"][0]
+        assert "question_id" in row
+        assert "question_text" in row
+        assert "wrong_count" in row
+        assert "total_attempts" in row
+        assert "correct_rate" in row
+        assert row["wrong_count"] == 2
+
+
+class TestCourseEffectiveness:
+    def test_course_effectiveness(self, client, admin_headers, member_user, org_setup, db):
+        from src.models.models import LearningEvent, ContentItem
+
+        course = ContentItem(
+            organization_id=org_setup["id"],
+            creator_id=member_user["user_id"],
+            title="Effectiveness Course",
+            body="body",
+            content_type="COURSE",
+        )
+        db.session.add(course)
+        db.session.flush()
+
+        for etype in ["PAGE_VIEW", "PAGE_VIEW", "COURSE_COMPLETE"]:
+            ev = LearningEvent(
+                user_id=member_user["user_id"],
+                organization_id=org_setup["id"],
+                content_id=course.id,
+                event_type=etype,
+            )
+            db.session.add(ev)
+        db.session.commit()
+
+        start_date = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%S"
+        )
+
+        resp = client.get(
+            f"/analytics/course-effectiveness"
+            f"?organization_id={org_setup['id']}"
+            f"&start_date={start_date}",
+            headers=admin_headers,
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()["data"]
+        assert "results" in data
+        assert len(data["results"]) >= 1
+        item = data["results"][0]
+        assert "content_id" in item
+        assert "title" in item
+        assert "total_events" in item
+        assert "completions" in item
+        assert "engagement_score" in item
+        assert item["total_events"] >= 3
+        assert item["completions"] >= 1
+
+    def test_course_effectiveness_unauthenticated(self, client, db):
+        resp = client.get("/analytics/course-effectiveness?start_date=2024-01-01")
+        assert resp.status_code == 401
+
+
 class TestExports:
     def test_create_export(self, client, admin_headers, org_setup, db):
         resp = client.post("/exports", json={
@@ -190,15 +300,18 @@ class TestExports:
             "parameters": {},
         }, headers=admin_headers)
         export_data = resp.get_json()["data"]["export"]
+        export_id = export_data["id"]
 
-        # Only try download if export completed and file exists
-        if export_data["status"] == "COMPLETED" and export_data.get("file_path"):
-            resp = client.get(
-                f"/exports/{export_data['id']}/download",
-                headers=admin_headers,
-            )
-            assert resp.status_code == 200
-        else:
-            # If export didn't complete (e.g., no file system access in test),
-            # verify the status is at least set correctly
-            assert export_data["status"] in ("COMPLETED", "FAILED")
+        # Ensure the export completed and has a file path before downloading
+        assert export_data["status"] == "COMPLETED", (
+            f"Export should be COMPLETED but was {export_data['status']}"
+        )
+        assert export_data.get("file_path"), "Export must have a file_path set"
+
+        resp = client.get(
+            f"/exports/{export_id}/download",
+            headers=admin_headers,
+        )
+        assert resp.status_code in (200, 202)
+        assert len(resp.data) > 0
+        assert "text/csv" in resp.content_type

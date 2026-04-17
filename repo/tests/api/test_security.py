@@ -8,18 +8,27 @@ class TestAuthentication:
     def test_unauthenticated_access_denied(self, client, db):
         resp = client.get("/auth/me")
         assert resp.status_code == 401
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "UNAUTHORIZED"
 
     def test_invalid_token_rejected(self, client, db):
         resp = client.get("/auth/me", headers={
             "Authorization": "Bearer garbage.invalid.token",
         })
         assert resp.status_code == 401
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "INVALID_TOKEN"
 
 
 class TestAuthorization:
     def test_member_cannot_access_admin(self, client, member_user, db):
         resp = client.get("/admin/system-status", headers=member_user["headers"])
         assert resp.status_code == 403
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "FORBIDDEN"
 
 
 class TestCrossOrgIsolation:
@@ -93,6 +102,9 @@ class TestCrossOrgContentCreation:
             "organization_id": org_b.id,
         }, headers=member_user["headers"])
         assert resp.status_code == 403
+        body = resp.get_json()
+        assert "error" in body
+        assert isinstance(body["error"]["message"], str)
 
     def test_member_can_create_content_in_own_org(self, client, member_user, org_setup, db):
         resp = client.post("/content", json={
@@ -140,6 +152,9 @@ class TestCrossOrgInvitations:
             "target_role": "member",
         }, headers=headers)
         assert resp.status_code == 403
+        body = resp.get_json()
+        assert "error" in body
+        assert isinstance(body["error"]["message"], str)
 
 
 class TestCrossOrgPermissions:
@@ -185,6 +200,9 @@ class TestCrossOrgPermissions:
             "organization_id": org_b.id,
         }, headers=headers)
         assert resp.status_code == 403
+        body = resp.get_json()
+        assert "error" in body
+        assert isinstance(body["error"]["message"], str)
 
 
 class TestSecurityHeaders:

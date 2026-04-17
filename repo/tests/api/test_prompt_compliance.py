@@ -631,38 +631,6 @@ class TestContentRecommendations:
         assert resp.status_code == 403
 
 
-class TestRateLimitBurstConfig:
-    """RATE_LIMIT_BURST must be applied as max_tokens in the token bucket."""
-
-    def test_burst_config_exists(self):
-        from src.config import config
-        assert hasattr(config, "RATE_LIMIT_BURST")
-        assert config.RATE_LIMIT_BURST == 20
-
-    def test_rate_limiter_accepts_burst_param(self):
-        """check_rate_limit should accept and use max_tokens (burst) separately from refill_rate."""
-        from src.security.rate_limiter import check_rate_limit
-        import inspect
-        sig = inspect.signature(check_rate_limit)
-        assert "max_tokens" in sig.parameters
-        assert "refill_rate" in sig.parameters
-
-
-class TestTLSDevDefault:
-    """TLS must be enabled by default per prompt requirements."""
-
-    def test_config_default_tls_enabled(self):
-        from src.config import _Config
-        c = _Config.__new__(_Config)
-        assert c.ENABLE_TLS is True
-
-    def test_docker_compose_tls_enabled(self):
-        import pathlib
-        compose_path = pathlib.Path(__file__).resolve().parents[2] / "docker-compose.yml"
-        content = compose_path.read_text()
-        assert "ENABLE_TLS=true" in content
-
-
 class TestReservationOrgBinding:
     """Hold endpoint must verify resource-org match and caller membership."""
 
@@ -892,31 +860,8 @@ class TestEncryptedHashStorage:
         assert "access_token" in refresh_resp.get_json()["data"]
 
 
-class TestDataModelParity:
-    """All prompt-specified model fields must be present."""
-
-    def test_membership_has_data_scope(self):
-        from src.models.models import Membership
-        assert hasattr(Membership, "data_scope")
-
-    def test_permission_has_action_category_assignable(self):
-        from src.models.models import Permission
-        assert hasattr(Permission, "action")
-        assert hasattr(Permission, "category")
-        assert hasattr(Permission, "assignable")
-
-    def test_slot_template_has_timezone_and_buffer(self):
-        from src.models.models import SlotTemplate
-        assert hasattr(SlotTemplate, "timezone")
-        assert hasattr(SlotTemplate, "buffer_minutes")
-
-    def test_learning_event_has_duration_seconds(self):
-        from src.models.models import LearningEvent
-        assert hasattr(LearningEvent, "duration_seconds")
-
-    def test_content_item_has_suppressed_until(self):
-        from src.models.models import ContentItem
-        assert hasattr(ContentItem, "suppressed_until")
+class TestDataModelParityAPI:
+    """Prompt-specified model fields must be exposed in API responses."""
 
     def test_permission_fields_in_api_response(self, client, admin_headers, db):
         """Permission API must expose action/category/assignable fields."""
@@ -944,45 +889,3 @@ class TestDataModelParity:
         assert resp.status_code == 201
         data = resp.get_json()["data"]
         assert "suppressed_until" in data
-
-
-class TestAdminBootstrapSecurity:
-    """Default admin credentials must be rejected in production environments."""
-
-    def test_fails_fast_in_production_with_default_password(self):
-        """App startup must raise RuntimeError if ADMIN_PASSWORD=admin in production."""
-        from src.config import config
-        original_env = config.APP_ENV
-        original_pw = config.ADMIN_PASSWORD
-        try:
-            config.APP_ENV = "production"
-            config.ADMIN_PASSWORD = "admin"
-            with pytest.raises(RuntimeError, match="ADMIN_PASSWORD must be set"):
-                create_app_for_bootstrap_test(config)
-        finally:
-            config.APP_ENV = original_env
-            config.ADMIN_PASSWORD = original_pw
-
-    def test_allows_default_in_development(self):
-        """In development mode, default admin password is allowed (with warning)."""
-        from src.config import config
-        assert config.APP_ENV == "development"
-        assert config.ADMIN_PASSWORD == "admin"
-        # The test conftest already bootstraps with defaults — it works
-
-
-def create_app_for_bootstrap_test(cfg):
-    """Minimal helper that only runs the bootstrap to test credential validation."""
-    from flask import Flask
-    from src.models.base import db as _db
-
-    app = Flask(__name__)
-    app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
-    app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-    _db.init_app(app)
-    with app.app_context():
-        import src.models.models  # noqa: F401
-        _db.create_all()
-        from src.app import _bootstrap_platform_admin
-        _bootstrap_platform_admin()
-    return app

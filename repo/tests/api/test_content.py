@@ -191,6 +191,63 @@ class TestContentDownload:
         assert data["download_count"] == 1
 
 
+class TestContentRecommendations:
+    def test_recommendations_returns_items_with_fields(self, client, member_user, org_setup, db):
+        """GET /content/recommendations should return content items with expected schema."""
+        # Create content by another user so it appears in recommendations
+        from src.models.models import Membership
+        from src.models.enums import RoleType
+
+        username = f"author_{uuid.uuid4().hex[:8]}"
+        reg = client.post("/auth/register-guest", json={
+            "username": username,
+            "password": "SecurePass1!",
+        })
+        author_id = reg.get_json()["data"]["user"]["id"]
+        m = Membership(user_id=author_id, organization_id=org_setup["id"], role=RoleType.MEMBER.value)
+        db.session.add(m)
+        db.session.commit()
+        login = client.post("/auth/login", json={
+            "username": username,
+            "password": "SecurePass1!",
+        })
+        author_headers = {"Authorization": f"Bearer {login.get_json()['data']['access_token']}"}
+
+        # Author creates content
+        client.post("/content", json={
+            "title": "Recommended Article",
+            "body": "Body for recommendations test.",
+            "organization_id": org_setup["id"],
+        }, headers=author_headers)
+
+        # Member fetches recommendations
+        resp = client.get(
+            f"/content/recommendations?organization_id={org_setup['id']}",
+            headers=member_user["headers"],
+        )
+        assert resp.status_code == 200
+        body = resp.get_json()
+        assert "data" in body
+        assert "pagination" in body
+        assert isinstance(body["data"], list)
+        assert len(body["data"]) >= 1
+        # Validate item schema
+        item = body["data"][0]
+        assert "id" in item
+        assert "title" in item
+        assert "content_type" in item
+        assert "quality_state" in item
+        assert "organization_id" in item
+
+    def test_recommendations_unauthenticated_returns_401(self, client, db):
+        """Unauthenticated request should return 401."""
+        resp = client.get("/content/recommendations")
+        assert resp.status_code == 401
+        body = resp.get_json()
+        assert "error" in body
+        assert body["error"]["code"] == "UNAUTHORIZED"
+
+
 class TestContentModeration:
     def test_report_content(self, client, member_user, org_setup, db):
         # Create content

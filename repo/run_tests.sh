@@ -8,10 +8,6 @@ echo ""
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-has_host_pytest() {
-    python -m pytest --version >/dev/null 2>&1
-}
-
 compose_cmd() {
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
         echo "docker compose"
@@ -26,22 +22,13 @@ compose_cmd() {
     return 1
 }
 
+COMPOSE="$(compose_cmd)" || {
+    echo "Docker is required to run tests. Please install Docker."
+    exit 1
+}
+
 run_pytest() {
-    if has_host_pytest; then
-        python -m pytest "$@"
-        return
-    fi
-
-    local compose
-    compose="$(compose_cmd)" || {
-        echo "[FAIL] pytest not found on host and Docker Compose is unavailable"
-        echo "       Install pytest (pip install -r src/requirements.txt) or Docker Compose"
-        return 127
-    }
-
-    echo "[INFO] pytest not found on host - running tests in Docker image"
-    # Mount repository into /app so tests and this repo layout are available.
-    ${compose} run --rm --no-deps -v "${ROOT}:/app" api python -m pytest "$@"
+    ${COMPOSE} run --rm --no-deps -v "${ROOT}:/app" api python -m pytest "$@"
 }
 
 # Unit tests

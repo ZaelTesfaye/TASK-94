@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import TypeDecorator, Text
+from sqlalchemy.orm import reconstructor
 
 from src.models.base import db
 from src.models.enums import (
@@ -434,6 +435,13 @@ class LoginFailureCounter(db.Model):
     locked_until = db.Column(db.DateTime(timezone=True), nullable=True)
     created_at = db.Column(db.DateTime(timezone=True), default=utcnow, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+    @reconstructor
+    def _normalize_timezone_fields(self):
+        if self.first_failure_at and self.first_failure_at.tzinfo is None:
+            self.first_failure_at = self.first_failure_at.replace(tzinfo=timezone.utc)
+        if self.locked_until and self.locked_until.tzinfo is None:
+            self.locked_until = self.locked_until.replace(tzinfo=timezone.utc)
 
 
 class AuditEvent(db.Model):

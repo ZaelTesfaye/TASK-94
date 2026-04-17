@@ -184,8 +184,9 @@ def _get_slot_quota(resource_id: str, start_time: datetime, end_time: datetime) 
     """
     target_date = start_time.date()
     day_of_week = target_date.weekday()
-    request_start_time = start_time.time()
-    request_end_time = end_time.time()
+    # SlotTemplate times are stored without tz; normalize incoming times to naive.
+    request_start_time = start_time.time().replace(tzinfo=None)
+    request_end_time = end_time.time().replace(tzinfo=None)
 
     # Find a matching slot template
     template = SlotTemplate.query.filter(

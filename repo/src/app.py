@@ -97,7 +97,7 @@ SENSITIVE_ROUTE_PREFIXES = ("/auth", "/admin")
 
 # Paths exempt from request signing and rate limiting (health, auth login/register)
 SIGNING_EXEMPT_PREFIXES = ("/health",)
-RATE_LIMIT_EXEMPT_PREFIXES = ("/health",)
+RATE_LIMIT_EXEMPT_PREFIXES = ()
 
 
 def _register_error_handlers(app: Flask) -> None:
@@ -164,19 +164,6 @@ def _register_before_request(app: Flask) -> None:
         g.request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
 
     @app.before_request
-    def enforce_tls():
-        """Reject non-HTTPS requests when TLS is enabled."""
-        if app.config.get("TESTING"):
-            return None
-        if not config.ENABLE_TLS:
-            return None
-        # X-Forwarded-Proto is set by reverse proxies; also check wsgi scheme
-        proto = request.headers.get("X-Forwarded-Proto", request.scheme)
-        if proto != "https":
-            logger.warning("security", "tls", f"Non-HTTPS request rejected: {request.url}")
-            return _error_envelope("TLS_REQUIRED", "HTTPS is required.", 403)
-
-    @app.before_request
     def enforce_request_signing():
         """Verify request signature on every non-exempt request."""
         if app.config.get("TESTING"):
@@ -214,6 +201,7 @@ def _register_before_request(app: Flask) -> None:
             for k, v in headers.items():
                 response.headers[k] = v
             return resp
+        g.rate_limit_headers = headers
 
         # Per-identity rate limit for authenticated requests
         auth_header = request.headers.get("Authorization", "")
@@ -234,6 +222,20 @@ def _register_before_request(app: Flask) -> None:
                     for k, v in user_headers.items():
                         response.headers[k] = v
                     return resp
+                g.rate_limit_headers = user_headers
+
+    @app.before_request
+    def enforce_tls():
+        """Reject non-HTTPS requests when TLS is enabled."""
+        if app.config.get("TESTING"):
+            return None
+        if not config.ENABLE_TLS:
+            return None
+        # X-Forwarded-Proto is set by reverse proxies; also check wsgi scheme
+        proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+        if proto != "https":
+            logger.warning("security", "tls", f"Non-HTTPS request rejected: {request.url}")
+            return _error_envelope("TLS_REQUIRED", "HTTPS is required.", 403)
 
     @app.before_request
     def log_request():
@@ -259,6 +261,11 @@ def _register_after_request(app: Flask) -> None:
 
     @app.after_request
     def set_security_headers(response):
+        rate_limit_headers = getattr(g, "rate_limit_headers", None)
+        if rate_limit_headers:
+            for k, v in rate_limit_headers.items():
+                response.headers[k] = v
+
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"

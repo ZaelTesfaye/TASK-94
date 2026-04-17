@@ -408,7 +408,11 @@ def revoke_invitation():
             f"Invitation revoked: id={invitation_id}",
             user_id=current_user.user_id,
         )
-        return success_response({"message": "Invitation revoked successfully", "invitation_id": invitation_id})
+        return success_response({
+            "message": "Invitation revoked successfully",
+            "invitation_id": invitation_id,
+            "status": invitation.status,
+        })
 
     except Exception as exc:
         db.session.rollback()
